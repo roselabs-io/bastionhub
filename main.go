@@ -23,7 +23,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "0.1.0-dev"
+// version is the bastionhub tool version. Defaults to "0.1.0-dev"
+// during local development; release builds override via:
+//   go build -ldflags "-X main.version=<tag>"
+// See .github/workflows/release.yml.
+var version = "0.1.0-dev"
 
 // -----------------------------------------------------------------------------
 // Endpoint-side paths (where bastionhub installs autossh on a Linux endpoint)

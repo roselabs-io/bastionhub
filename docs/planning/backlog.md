@@ -11,7 +11,6 @@ _(none — substrate completeness items shipped; next chunk is cross-cutting CI/
 - **First bastionhub-series ADR.** First independent decision — likely the bastion-side config split (00-bastionhub.conf scope) or macOS launchd path.
 - **`bastionhub bastion verify`** — quick sanity check the bastion VPS is configured correctly: sshd drop-ins present, `gw-tunnel` user exists, `gw-passthrough` user exists, `TrustedUserCAKeys` pubkey matches local `sshca`'s, KRL is readable.
 - **Pattern B registry-driven script.** Today's `principal-to-acl.sh` emits a fixed list. Replace with a script that reads a config file (per-principal `permitopen` mapping) so adding a new edge-passthrough doesn't require editing the script itself.
-- **Tagged release pipeline.** `.github/workflows/release.yml` triggered on `v*` tag push — builds binaries for the 6-platform matrix, attaches them to a GitHub Release. CI is already in place; release is the next step.
 - **Homebrew tap.** Shared `roselabs-io/homebrew-tools` with `sshca` and `bastionhub` formulae. Requires a tagged release first to pin formula's URL + sha256.
 
 ## Later
