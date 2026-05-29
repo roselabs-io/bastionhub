@@ -5,9 +5,8 @@
 ## Active
 
 1. **Ship a complete bastion-side starter sshd config.** Currently `deploy/bastion/` has the Pattern B drop-in and script. Missing: the foundational `Match User gw-tunnel` (with `PermitListen 12001-12099`, `ForceCommand /bin/false`, `PermitTTY no`), `Match User gw-user`, `TrustedUserCAKeys`, `RevokedKeys` blocks. These live as manual setup on Patrick's bastion today; bastionhub should ship them as `deploy/bastion/00-bastionhub.conf` so a fresh deploy is reproducible from `git clone`.
-2. **End-to-end test against the real bastion.** Verify the migrated binary works end-to-end on Patrick's existing setup: `bastionhub init`, copy current `gateways.yaml` content to `endpoints.yaml`, `bastionhub list/status`, `bastionhub ssh perso-mbp`, `bastionhub endpoint enroll` for a new endpoint.
-3. **Migration guide** for the in-place hand-off from `gwctl` to `bastionhub`. Steps: install `sshca` + `bastionhub`, `cp ~/.config/gwctl/gateways.yaml ~/.config/bastionhub/endpoints.yaml`, edit `gateways:` key → `endpoints:` key, verify with `bastionhub list/status`. One-time, single user, no shim needed.
-4. **macOS endpoint setup via launchd.** The endpoint install/setup paths are Linux-only today (assume systemd). macOS endpoints (Patrick's perso-mbp + work-laptop) currently use manual launchd plist setup. Wrap as `bastionhub endpoint install` / `setup` on macOS too.
+2. **macOS endpoint setup via launchd.** The endpoint install/setup paths are Linux-systemd-only today. Both of Patrick's laptops are macOS managed by hand-written `~/Library/LaunchAgents/*.plist` files. Wrap as `bastionhub endpoint install` / `setup` on Darwin too — generates a launchd plist instead of a systemd unit, per-user (no sudo), brew-detected autossh, plist label per-endpoint (`com.roselabs.bastionhub-tunnel.<name>`). ~4 h.
+3. **Cross-platform engineer-laptop support (Windows).** Engineer-side commands (`bastionhub list/status/ssh/endpoint enroll`) should run on Windows since Go cross-compiles trivially and Windows ships OpenSSH. Blocker is `syscall.Exec` in `sshCmd` (Unix-only) — replace with `os/exec` + `cmd.Run()` pattern. Verify on a Windows box / VM, document Windows install steps in README. ~3-4 h. Does NOT include endpoint-side support on Windows (NSSM + autossh-on-Windows is a different beast — parked, see below).
 
 ## Soon
 
@@ -30,3 +29,4 @@
 - **Registry of customers/projects/roles.** Belongs in the consumer (the `gateway` product), not bastionhub. Endpoints registry is intentionally schema-narrow.
 - **Fleet console / observability / deploy gate.** Product features, not substrate. Live upstream in `gateway`.
 - **Cert mechanics / CA.** All cert ops shell out to [`sshca`](https://github.com/roselabs-io/sshca). Bastionhub never holds CA keys.
+- **Windows as a reverse-tunnel endpoint.** The architectural answer is "Windows is a downstream device behind a V1 gateway, not an endpoint itself" — the V1 BPI-R3 jumpbox bridges to whatever Windows gear is on the customer LAN (SCADA, HMI, etc.) via `permitopen`. Supporting Windows-as-endpoint would mean NSSM + autossh-on-Windows quirks for a use case the product architecture already routes around. Revisit only if a credible OT integrator says they specifically need this AND the V1 hardware route doesn't fit their site.

@@ -69,7 +69,9 @@ The schema is part of bastionhub's contract surface — upstream tools (e.g. the
 - **`docs/reference/` content** — SSH bastion + reverse-tunnel primer, contract docs, Pattern B walk-through. Backlog.
 - **CI/CD** — no GitHub Actions yet.
 - **Distribution** — no Homebrew tap; install from source only.
-- **End-to-end smoke test against a real bastion.** Help output verified; no live deploy of this binary against the bastion yet.
+## Recently landed
+
+- **2026-05-29** — Live deployment cutover from `gwctl`. `bastionhub` binary installed at `~/.local/bin/bastionhub` on Patrick's perso-mbp; `~/.config/bastionhub/endpoints.yaml` migrated from `~/.config/gwctl/gateways.yaml` (3 endpoints: customer-002 placeholder, perso-mbp, work-laptop). End-to-end verified live: `bastionhub list/status` query the real bastion at `46.225.2.150`; `bastionhub ssh perso-mbp -- uptime` round-tripped successfully via cert auth. Old `gwctl` binary removed.
 
 ## See also
 
