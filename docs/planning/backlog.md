@@ -4,14 +4,14 @@
 
 ## Active
 
-1. **Cross-platform engineer-laptop support (Windows).** Engineer-side commands (`bastionhub list/status/ssh/endpoint enroll`) should run on Windows since Go cross-compiles trivially and Windows ships OpenSSH. Blocker is `syscall.Exec` in `sshCmd` (Unix-only) — replace with `os/exec` + `cmd.Run()` pattern. Verify on a Windows box / VM, document Windows install steps in README. ~3-4 h. Does NOT include endpoint-side support on Windows (NSSM + autossh-on-Windows is a different beast — parked, see below).
+_(none — substrate completeness items shipped; next chunk is cross-cutting CI/CD + Homebrew tap, see below.)_
 
 ## Soon
 
 - **First bastionhub-series ADR.** First independent decision — likely the bastion-side config split (00-bastionhub.conf scope) or macOS launchd path.
 - **`bastionhub bastion verify`** — quick sanity check the bastion VPS is configured correctly: sshd drop-ins present, `gw-tunnel` user exists, `gw-passthrough` user exists, `TrustedUserCAKeys` pubkey matches local `sshca`'s, KRL is readable.
 - **Pattern B registry-driven script.** Today's `principal-to-acl.sh` emits a fixed list. Replace with a script that reads a config file (per-principal `permitopen` mapping) so adding a new edge-passthrough doesn't require editing the script itself.
-- **CI/CD setup.** GitHub Actions: build, test, release. Single binary per platform.
+- **CI/CD setup.** GitHub Actions: build, test, release. Single binary per platform (darwin-arm64, darwin-amd64, linux-amd64, linux-arm64, windows-amd64, windows-arm64).
 - **Homebrew tap.** Shared `roselabs-io/homebrew-tools` with `sshca` and `bastionhub` formulae.
 
 ## Later

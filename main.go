@@ -17,7 +17,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/urfave/cli/v3"
@@ -129,6 +128,12 @@ func allocatePort(cfg *Config) (int, error) {
 // -----------------------------------------------------------------------------
 
 // sshCmd: bastionhub ssh <endpoint> [extra ssh args...]
+//
+// Uses exec.Command + Run() with inherited stdio rather than syscall.Exec
+// so it works on Windows. On Unix this means Go's runtime stays in the
+// middle of the process tree (vs. syscall.Exec which would replace it),
+// but signal forwarding via inherited stdio is correct: Ctrl+C reaches
+// ssh as expected.
 func sshCmd(_ context.Context, cmd *cli.Command) error {
 	name := cmd.Args().First()
 	if name == "" {
@@ -144,7 +149,6 @@ func sshCmd(_ context.Context, cmd *cli.Command) error {
 	}
 
 	args := []string{
-		"ssh",
 		"-J", cfg.BastionAlias,
 		fmt.Sprintf("%s@127.0.0.1", ep.User),
 		"-p", fmt.Sprintf("%d", ep.Port),
@@ -156,9 +160,21 @@ func sshCmd(_ context.Context, cmd *cli.Command) error {
 
 	sshPath, err := exec.LookPath("ssh")
 	if err != nil {
-		return cli.Exit("ssh binary not found in PATH", 1)
+		return cli.Exit("ssh binary not found in PATH (install OpenSSH client: brew/apt install openssh-client, or Windows Optional Feature 'OpenSSH Client')", 1)
 	}
-	return syscall.Exec(sshPath, args, os.Environ())
+	sshExec := exec.Command(sshPath, args...)
+	sshExec.Stdin = os.Stdin
+	sshExec.Stdout = os.Stdout
+	sshExec.Stderr = os.Stderr
+	if err := sshExec.Run(); err != nil {
+		// Propagate ssh's exit code (e.g. 255 for connection failure)
+		// so callers can react. Other Go-side errors fall through to cli.Exit.
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		return cli.Exit(err.Error(), 1)
+	}
+	return nil
 }
 
 func listCmd(_ context.Context, _ *cli.Command) error {

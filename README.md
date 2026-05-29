@@ -27,8 +27,15 @@ From source (until Homebrew tap lands):
 ```sh
 git clone https://github.com/roselabs-io/bastionhub.git
 cd bastionhub
-go build -o bastionhub .
+go build -o bastionhub .       # Linux, macOS
+go build -o bastionhub.exe .   # Windows (PowerShell)
 ```
+
+Cross-compiled binaries for windows-amd64 / windows-arm64 / linux-amd64 / darwin-arm64 build cleanly from any platform; CI/Homebrew tap distribution is on the backlog.
+
+**Engineer laptop:** Linux, macOS, and Windows all work for the engineer-side commands (`list`, `status`, `ssh`, `endpoint register/enroll/unregister`).
+
+**Endpoint device** (where the reverse tunnel autossh service runs): Linux + macOS are supported via `bastionhub endpoint install/setup`. Windows as an endpoint is out of scope — see [docs/planning/backlog.md](docs/planning/backlog.md) "Parked" for the rationale.
 
 Bastionhub depends on `sshca` being in `PATH` for cert operations:
 
