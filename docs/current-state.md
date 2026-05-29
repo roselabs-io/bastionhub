@@ -26,11 +26,11 @@
 - `sudo bastionhub endpoint install` — installs autossh (apt/dnf/yum/apk), generates an ed25519 key at `/etc/bastionhub-tunnel/id_ed25519`, prints the pubkey
 - `sudo bastionhub endpoint setup --port N --bastion HOST` — writes `/etc/systemd/system/bastionhub-tunnel.service` and starts it
 
-**Bastion-side deploy artifacts** (manual install on the bastion VPS):
+**Bastion-side deploy artifacts** (manual install on the bastion VPS — see [`deploy/bastion/README.md`](../../deploy/bastion/README.md) for the procedure):
 
-- [`deploy/bastion/principal-to-acl.sh`](../../deploy/bastion/principal-to-acl.sh) — `AuthorizedPrincipalsCommand` script for the `gw-passthrough` Unix user (Pattern B)
-- [`deploy/bastion/30-passthrough-acl.conf`](../../deploy/bastion/30-passthrough-acl.conf) — sshd drop-in that wires the script
-- [`deploy/bastion/README.md`](../../deploy/bastion/README.md) — install procedure
+- [`deploy/bastion/10-bastionhub.conf`](../../deploy/bastion/10-bastionhub.conf) — **foundational** sshd drop-in: `TrustedUserCAKeys`, `RevokedKeys`, optional `HostCertificate`, `Match User gw-tunnel` (with `PermitListen 12001-12099`), `Match User gw-user`. Sufficient for the V0 substrate by itself.
+- [`deploy/bastion/principal-to-acl.sh`](../../deploy/bastion/principal-to-acl.sh) — **optional Pattern B**: `AuthorizedPrincipalsCommand` script for the `gw-passthrough` Unix user (per-principal `permitopen` scoping)
+- [`deploy/bastion/30-passthrough-acl.conf`](../../deploy/bastion/30-passthrough-acl.conf) — **optional Pattern B**: sshd drop-in wiring the script
 
 ## Config
 
@@ -64,13 +64,14 @@ The schema is part of bastionhub's contract surface — upstream tools (e.g. the
 
 ## What's NOT here yet
 
-- **Bastion-side starter sshd config** (the `Match User gw-tunnel`, `Match User gw-user`, `TrustedUserCAKeys`, `RevokedKeys` blocks). Currently lives on Patrick's bastion as a manual setup; needs to ship as a documented `00-bastionhub.conf` drop-in. Backlog item.
 - **macOS endpoint setup** via launchd. The endpoint install/setup paths are Linux-only; macOS endpoints need manual launchd plists.
+- **Cross-platform engineer-laptop support (Windows).** Engineer-side commands work on Go's supported platforms but `bastionhub ssh` currently uses `syscall.Exec` (Unix-only) — needs a small refactor for Windows.
 - **`docs/reference/` content** — SSH bastion + reverse-tunnel primer, contract docs, Pattern B walk-through. Backlog.
 - **CI/CD** — no GitHub Actions yet.
 - **Distribution** — no Homebrew tap; install from source only.
 ## Recently landed
 
+- **2026-05-29** — Foundational sshd drop-in shipped: `deploy/bastion/10-bastionhub.conf` (CA trust + `Match User gw-tunnel` + `Match User gw-user`). Combined with the existing optional Pattern B drop-in, a fresh bastion can now be brought up from `git clone` per the procedure in [`deploy/bastion/README.md`](../../deploy/bastion/README.md) — no more "lives manually on Patrick's bastion" caveat for the substrate-completeness story.
 - **2026-05-29** — Live deployment cutover from `gwctl`. `bastionhub` binary installed at `~/.local/bin/bastionhub` on Patrick's perso-mbp; `~/.config/bastionhub/endpoints.yaml` migrated from `~/.config/gwctl/gateways.yaml` (3 endpoints: customer-002 placeholder, perso-mbp, work-laptop). End-to-end verified live: `bastionhub list/status` query the real bastion at `46.225.2.150`; `bastionhub ssh perso-mbp -- uptime` round-tripped successfully via cert auth. Old `gwctl` binary removed.
 
 ## See also
