@@ -1,0 +1,21 @@
+# Build artifacts
+bastionhub
+*.exe
+*.test
+*.out
+*.prof
+coverage.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config snapshots / overrides
+endpoints.local.yaml
+*.local.yaml
