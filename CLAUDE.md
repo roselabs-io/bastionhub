@@ -2,7 +2,7 @@
 
 Self-hosted SSH bastion + reverse-tunnel substrate. Pairs with [sshca](https://github.com/roselabs-io/sshca) for cert auth. Single Go binary, two intended deps (`urfave/cli/v3` + `gopkg.in/yaml.v3`). Substrate-narrow scope; no policy, no registry, no observability.
 
-**Status:** Pre-release; v0.1.0-dev. Code migrated from the upstream [`gateway`](https://github.com/roselabs-io/gateway) repo per [docs/decisions/inherited.md](docs/decisions/inherited.md).
+**Status:** Pre-release; v0.1.0-dev. Code migrated from the upstream `gateway` repo per [docs/decisions/inherited.md](docs/decisions/inherited.md).
 
 ## Read order for a fresh agent session
 
@@ -18,7 +18,7 @@ Self-hosted SSH bastion + reverse-tunnel substrate. Pairs with [sshca](https://g
 
 **What this isn't:**
 
-- A cert authority — shells out to `sshca` for everything cert-related. Upstream [ADR-006](https://github.com/roselabs-io/gateway/blob/main/docs/decisions/ADR-006-bifurcate-cert-tool-from-gateway-product.md), upstream [ADR-008](https://github.com/roselabs-io/gateway/blob/main/docs/decisions/ADR-008-extract-bastion-substrate-as-bastionhub.md).
+- A cert authority — shells out to `sshca` for everything cert-related. Upstream ADR-006, upstream ADR-008.
 - A policy engine — no roles, no customers, no projects. Just tunnel endpoints. Schema-rich registries live one layer up.
 - A multi-substrate connectivity tool — SSH-bastion + reverse-tunnel only. No Tailscale, no WireGuard.
 
@@ -27,7 +27,7 @@ Self-hosted SSH bastion + reverse-tunnel substrate. Pairs with [sshca](https://g
 1. **Substrate-narrow scope.** Run the SSH-bastion + reverse-tunnel pattern well, with sane defaults. Anything richer (policy, audit beyond connection logs, fleet observability) belongs upstream.
 2. **Cert auth via `sshca`.** No in-process signing. `sshca` is a required runtime dependency; subprocess invocation.
 3. **Schema-neutral local config.** `endpoints.yaml` knows about port, user, identity, description. It does NOT know about customer, role, or principal vocabulary. Upstream tools compile their richer registries down to this.
-4. **Stock OpenSSH on both ends.** No custom sshd, no patches. Drop-ins + `AuthorizedPrincipalsCommand` for per-principal scoping (Pattern B; see upstream [ADR-004](https://github.com/roselabs-io/gateway/blob/main/docs/decisions/ADR-004-principal-taxonomy-default-no-shell.md)).
+4. **Stock OpenSSH on both ends.** No custom sshd, no patches. Drop-ins + `AuthorizedPrincipalsCommand` for per-principal scoping (Pattern B; see upstream ADR-004).
 5. **Reverse tunnels via autossh + systemd / launchd.** Battle-tested, not invented here.
 
 ## Contract surface (semver discipline)
@@ -60,4 +60,4 @@ Same trigger-action discipline as the upstream `gateway` repo:
 - [README.md](README.md) — public overview
 - [docs/decisions/inherited.md](docs/decisions/inherited.md) — upstream ADRs
 - [github.com/roselabs-io/sshca](https://github.com/roselabs-io/sshca) — cert tool bastionhub depends on
-- [github.com/roselabs-io/gateway](https://github.com/roselabs-io/gateway) — OT product that consumes bastionhub
+- The OT-integrator product layer that consumes bastionhub (internal — not OSS).

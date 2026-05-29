@@ -17,7 +17,7 @@ Self-hosted SSH bastion + reverse-tunnel substrate. Pairs with [sshca](https://g
 Substrate only. Three things bastionhub explicitly does NOT do:
 
 - **No CA / cert mechanics.** Shells out to [sshca](https://github.com/roselabs-io/sshca) for signing host and tunnel certs. Bastionhub never holds CA private keys.
-- **No multi-tenant policy / registry schema.** No concept of "customer" or "role" — just tunnel endpoints. Upstream tools (e.g. the [gateway](https://github.com/roselabs-io/gateway) OT product) compile their richer registries down to bastionhub's local config.
+- **No multi-tenant policy / registry schema.** No concept of "customer" or "role" — just tunnel endpoints. Upstream tools (e.g. the gateway OT product) compile their richer registries down to bastionhub's local config.
 - **No other substrates.** No Tailscale, WireGuard, or DERP. SSH-bastion + reverse-tunnel only. If those substrates become interesting, they get their own tools.
 
 ## Install
@@ -55,7 +55,7 @@ sudo mv sshca /usr/local/bin/
 bastionhub init
 
 # 2. Enroll an endpoint — one shot: signs the tunnel cert (via sshca) + registers
-bastionhub endpoint enroll perso-mbp --pubkey-file ./perso-mbp.pub
+bastionhub endpoint enroll my-endpoint --pubkey-file ./my-endpoint.pub
 # → outputs the assigned port + ships you a cert file to deliver to the endpoint
 
 # 3. On the endpoint device, once the cert is in place:
@@ -70,7 +70,7 @@ bastionhub endpoint setup --port 12001 --bastion bastion.example.com
 # 4. Daily use — from the engineer laptop:
 bastionhub list                    # show configured endpoints
 bastionhub status                  # query bastion for live tunnels
-bastionhub ssh perso-mbp           # ProxyJump via bastion
+bastionhub ssh my-endpoint           # ProxyJump via bastion
 ```
 
 The config lives at `~/.config/bastionhub/endpoints.yaml` (override with `$BASTIONHUB_CONFIG`).

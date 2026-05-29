@@ -4,7 +4,7 @@
 
 ## Status
 
-**v0.1.0-dev** — core endpoint management + endpoint-side install / setup implemented. Single ~5 MB binary, two deps (`urfave/cli/v3` v3.9.0 + `gopkg.in/yaml.v3` v3.0.1). Requires `sshca` in `PATH` for cert operations.
+**v0.1.0** — core endpoint management + endpoint-side install / setup implemented. Single ~5 MB binary, two deps (`urfave/cli/v3` v3.9.0 + `gopkg.in/yaml.v3` v3.0.1). Requires `sshca` in `PATH` for cert operations.
 
 ## What works
 
@@ -46,42 +46,30 @@ bastion_alias: bastion         # ProxyJump target for daily use
 admin_alias: bastion-root      # for status/admin queries
 
 endpoints:
-  perso-mbp:
+  my-laptop:
     port: 12001
-    user: psd
+    user: alice
     identity: ~/.ssh/id_ed25519
-    description: "Personal MacBook"
+    description: "Example endpoint"
 ```
 
-The schema is part of bastionhub's contract surface — upstream tools (e.g. the `gateway` product) compile their richer registries down to this format.
-
-## Recently landed
-
-- **2026-05-29** — v0.1.0-dev: repo created from the three-repo decomposition (upstream ADR-007/008). Cert code moved out (now in `sshca`); bastion-substrate code moved in from `gateway/cli/main.go`. Renames during migration:
-  - `Gateway` struct → `Endpoint` (substrate-neutral; "gateway" is OT-vocabulary that belongs upstream)
-  - `gateways.yaml` → `endpoints.yaml`
-  - `gateway-tunnel.service` (systemd) → `bastionhub-tunnel.service`
-  - `/etc/gateway-tunnel/` paths → `/etc/bastionhub-tunnel/`
-  - `gwctl gateway *` commands → `bastionhub endpoint *`
-  - `GWCTL_CONFIG` env var → `BASTIONHUB_CONFIG`
-  - `gatewayEnrollCmd` rewritten to shell out to `sshca cert sign` (was in-process signing)
-- **2026-05-29** — Pattern B deploy artifacts migrated from `gateway/deploy/bastion/` — script + sshd drop-in + README.
+The schema is part of bastionhub's contract surface — upstream tools that produce richer registries compile them down to this format.
 
 ## What's NOT here yet
 
-- **First tagged release + Homebrew tap.** Release pipeline is in place (`.github/workflows/release.yml` on `v*` tag push). Tag `v0.1.0` to trigger the first GitHub Release; then the `roselabs-io/homebrew-tools` tap can land pointing at the release artifacts.
-- **`docs/reference/` content** — SSH bastion + reverse-tunnel primer, contract docs, Pattern B walk-through. Backlog.
-- **CI/CD** — no GitHub Actions yet.
-- **Distribution** — no Homebrew tap; install from source only.
+- **`docs/reference/` content** — SSH bastion + reverse-tunnel primer, Pattern B walk-through. Backlog.
+
 ## Recently landed
 
-- **2026-05-29** — Release pipeline + unit tests shipped. `.github/workflows/release.yml` triggered on `v*` tag push builds the 6-platform matrix with `-ldflags "-X main.version=<tag>"` injection, packages each binary as `.tar.gz` (Unix) / `.zip` (Windows), generates SHA-256 checksums, and attaches everything to an auto-released GitHub Release. `main.go`'s `version` flipped from `const` to `var` to enable the injection. 8 unit + regression tests in `main_test.go` cover `sanitizeForComment` (ASCII/non-ASCII/empty), `loadConfig` (nil-map regression for the bug found during 2026-05-29 cutover + defaults + missing-file), and `allocatePort` (empty / skip-taken / fill-holes / exhausted). All pass locally; CI's previously-vacuous `go test ./...` step now has real coverage.
-- **2026-05-29** — GitHub Actions CI shipped at `.github/workflows/ci.yml`. 6-platform matrix runs `go vet` + `go build` per cell on every push to main and every PR. `go test ./...` runs once on linux/amd64 (placeholder — no test files yet). Locally-validated: all 6 cells pass vet + build (binary sizes 5.8-6.1 MB across platforms).
-- **2026-05-29** — [docs/reference/contracts.md](reference/contracts.md) shipped. Declares the three semver-disciplined surfaces downstream consumers (the gateway product, future tools) depend on: CLI grammar, `endpoints.yaml` schema, deploy artifact paths (systemd unit name, launchd plist label, sshd drop-in filenames). Documents the unidirectional registry → `endpoints.yaml` compilation contract for upstream tools and the cross-tool versioning relationship with sshca.
-- **2026-05-29** — Cross-platform engineer-laptop support (Windows). Replaced `syscall.Exec` (Unix-only) in `sshCmd` with `exec.Command + Run()` using inherited stdio. Exit-code propagation preserved (verified: `true` → 0, `false` → 1, `exit 42` → 42). Cross-compiles cleanly for windows/amd64 (6.1 MB), windows/arm64 (5.8 MB), linux/amd64 (6.0 MB), darwin/arm64. Engineer-side commands (`list`, `status`, `ssh`, `endpoint register/enroll/unregister`) now work on Windows. Endpoint-side (`install`/`setup` for autossh-as-service) remains parked for Windows per upstream architectural answer (V1 hardware bridges to Windows devices behind the gateway, not Windows-as-endpoint).
-- **2026-05-29** — macOS endpoint via launchd shipped. `bastionhub endpoint install` and `setup` now dispatch on `runtime.GOOS`: Linux gets the existing systemd + apt/dnf/yum/apk path; macOS gets a new launchd + brew + per-user `~/.bastionhub-tunnel/` + `~/Library/LaunchAgents/com.roselabs.bastionhub-tunnel.plist` path. Setup gains a `--dry-run` flag (print the unit/plist + commands without writing or loading) — useful when a tunnel is already running and you want to inspect the generated config without disrupting it. Verified end-to-end on perso-mbp: install created `~/.bastionhub-tunnel/` + ed25519 key; `setup --dry-run` produced a valid plist with Apple Silicon brew prefix (`/opt/homebrew/bin/autossh`), per-user paths throughout, all launchd keys present. Patrick's existing hand-written plist untouched (additive migration policy).
-- **2026-05-29** — Foundational sshd drop-in shipped: `deploy/bastion/10-bastionhub.conf` (CA trust + `Match User gw-tunnel` + `Match User gw-user`). Combined with the existing optional Pattern B drop-in, a fresh bastion can now be brought up from `git clone` per the procedure in [`deploy/bastion/README.md`](../../deploy/bastion/README.md) — no more "lives manually on Patrick's bastion" caveat for the substrate-completeness story.
-- **2026-05-29** — Live deployment cutover from `gwctl`. `bastionhub` binary installed at `~/.local/bin/bastionhub` on Patrick's perso-mbp; `~/.config/bastionhub/endpoints.yaml` migrated from `~/.config/gwctl/gateways.yaml` (3 endpoints: customer-002 placeholder, perso-mbp, work-laptop). End-to-end verified live: `bastionhub list/status` query the real bastion at `46.225.2.150`; `bastionhub ssh perso-mbp -- uptime` round-tripped successfully via cert auth. Old `gwctl` binary removed.
+- **2026-05-29** — v0.1.0 tagged. First GitHub Release created via `.github/workflows/release.yml`: 6 platform binaries (linux/darwin/windows × amd64/arm64) + sha256 checksums attached, version injected via `-ldflags "-X main.version=v0.1.0"`.
+- **2026-05-29** — Release pipeline + unit tests shipped. `.github/workflows/release.yml` triggered on `v*` tag push builds the 6-platform matrix with ldflags injection, packages each binary as `.tar.gz` (Unix) / `.zip` (Windows), generates SHA-256 checksums, and attaches everything to an auto-released GitHub Release. `main.go`'s `version` flipped from `const` to `var` to enable the injection. 8 unit + regression tests in `main_test.go` cover `sanitizeForComment`, `loadConfig` (including a regression for the nil-map panic discovered during initial deploys), and `allocatePort` (empty / skip-taken / fill-holes / exhausted).
+- **2026-05-29** — GitHub Actions CI shipped at `.github/workflows/ci.yml`. 6-platform matrix runs `go vet` + `go build` per cell on every push to main and every PR. `go test ./...` runs on linux/amd64.
+- **2026-05-29** — [docs/reference/contracts.md](reference/contracts.md) shipped. Declares the three semver-disciplined surfaces downstream consumers depend on: CLI grammar, `endpoints.yaml` schema, deploy artifact paths (systemd unit name, launchd plist label, sshd drop-in filenames).
+- **2026-05-29** — Cross-platform engineer-laptop support (Windows). Replaced `syscall.Exec` (Unix-only) in `sshCmd` with `exec.Command + Run()` using inherited stdio. Exit-code propagation preserved. Cross-compiles cleanly for windows/amd64, windows/arm64, linux/amd64, darwin/arm64. Engineer-side commands (`list`, `status`, `ssh`, `endpoint register/enroll/unregister`) work on Windows.
+- **2026-05-29** — macOS endpoint via launchd shipped. `bastionhub endpoint install` and `setup` dispatch on `runtime.GOOS`: Linux uses systemd + apt/dnf/yum/apk; macOS uses launchd + brew + per-user `~/.bastionhub-tunnel/` + `~/Library/LaunchAgents/com.roselabs.bastionhub-tunnel.plist`. Setup gains a `--dry-run` flag (print the unit/plist + commands without writing or loading) — useful when a tunnel is already running and you want to inspect the generated config without disrupting it. Validated end-to-end on macOS (Apple Silicon): install created the key dir + ed25519 key; `setup --dry-run` produced a valid plist with brew-prefix autossh path, per-user paths, all launchd keys present. Migration policy is additive — existing hand-written plists keep running.
+- **2026-05-29** — Foundational sshd drop-in shipped: `deploy/bastion/10-bastionhub.conf` (CA trust + `Match User gw-tunnel` + `Match User gw-user`). Combined with the optional Pattern B drop-in, a fresh bastion can be brought up from `git clone` per the procedure in [`deploy/bastion/README.md`](../../deploy/bastion/README.md).
+- **2026-05-29** — v0.1.0-dev migration from the upstream gateway monorepo. Cert code moved to `sshca`; bastion-substrate code moved here. Renames during migration: `Gateway` struct → `Endpoint`, `gateways.yaml` → `endpoints.yaml`, `gateway-tunnel.service` → `bastionhub-tunnel.service`, `/etc/gateway-tunnel/` → `/etc/bastionhub-tunnel/`, `gwctl gateway *` → `bastionhub endpoint *`. `endpoint enroll` rewritten to shell out to `sshca cert sign` (no longer in-process signing).
+- **2026-05-29** — Pattern B deploy artifacts migrated: script + sshd drop-in + README.
 
 ## See also
 

@@ -92,7 +92,7 @@ ssh -J bastion-root@<bastion-host> gw-passthrough@<bastion-host> \
 
 ## See also
 
-- Upstream [ADR-001](https://github.com/roselabs-io/gateway/blob/main/docs/decisions/ADR-001-replace-raw-key-auth-with-ssh-certs.md) — `Match Principal` is not valid OpenSSH syntax; we use `Match User <role>` instead
-- Upstream [ADR-004](https://github.com/roselabs-io/gateway/blob/main/docs/decisions/ADR-004-principal-taxonomy-default-no-shell.md) — Principal taxonomy + why default principals grant no shell
-- Upstream [ADR-008](https://github.com/roselabs-io/gateway/blob/main/docs/decisions/ADR-008-extract-bastion-substrate-as-bastionhub.md) — Why per-principal scoping needs `AuthorizedPrincipalsCommand` (Pattern B)
+- Upstream ADR-001 — `Match Principal` is not valid OpenSSH syntax; we use `Match User <role>` instead
+- Upstream ADR-004 — Principal taxonomy + why default principals grant no shell
+- Upstream ADR-008 — Why per-principal scoping needs `AuthorizedPrincipalsCommand` (Pattern B)
 - [github.com/roselabs-io/sshca](https://github.com/roselabs-io/sshca) — Cert tool used throughout these procedures

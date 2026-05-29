@@ -22,7 +22,7 @@ _(none — substrate completeness items shipped; next chunk is cross-cutting CI/
 
 ## Parked
 
-- **Multi-substrate** (Tailscale, WireGuard, DERP). Out of scope per upstream [ADR-008](https://github.com/roselabs-io/gateway/blob/main/docs/decisions/ADR-008-extract-bastion-substrate-as-bastionhub.md). bastionhub is SSH-bastion + reverse-tunnel only. Other substrates get their own tools.
+- **Multi-substrate** (Tailscale, WireGuard, DERP). Out of scope per upstream ADR-008. bastionhub is SSH-bastion + reverse-tunnel only. Other substrates get their own tools.
 - **Registry of customers/projects/roles.** Belongs in the consumer (the `gateway` product), not bastionhub. Endpoints registry is intentionally schema-narrow.
 - **Fleet console / observability / deploy gate.** Product features, not substrate. Live upstream in `gateway`.
 - **Cert mechanics / CA.** All cert ops shell out to [`sshca`](https://github.com/roselabs-io/sshca). Bastionhub never holds CA keys.
