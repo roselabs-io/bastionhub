@@ -21,10 +21,15 @@
 - `bastionhub endpoint unregister <name>` — removes
 - `bastionhub endpoint enroll <name> --pubkey-file <path>` — one-shot: shells out to `sshca cert sign` with `--principal gw-tunnel --valid +52w`, then registers
 
-**Endpoint device (Linux only, needs root):**
+**Endpoint device (Linux + macOS):**
 
-- `sudo bastionhub endpoint install` — installs autossh (apt/dnf/yum/apk), generates an ed25519 key at `/etc/bastionhub-tunnel/id_ed25519`, prints the pubkey
-- `sudo bastionhub endpoint setup --port N --bastion HOST` — writes `/etc/systemd/system/bastionhub-tunnel.service` and starts it
+- **Linux** (needs root):
+  - `sudo bastionhub endpoint install` — installs autossh (apt/dnf/yum/apk), generates an ed25519 key at `/etc/bastionhub-tunnel/id_ed25519`, prints the pubkey
+  - `sudo bastionhub endpoint setup --port N --bastion HOST` — writes `/etc/systemd/system/bastionhub-tunnel.service` and starts it
+- **macOS** (per-user, no sudo):
+  - `bastionhub endpoint install` — detects brew prefix, `brew install autossh` if needed, generates an ed25519 key at `~/.bastionhub-tunnel/id_ed25519`, prints the pubkey
+  - `bastionhub endpoint setup --port N --bastion HOST` — writes `~/Library/LaunchAgents/com.roselabs.bastionhub-tunnel.plist`, `launchctl bootstrap`s it, prints status
+  - Both support `--dry-run` for setup (print the unit/plist + commands without writing or loading — useful when a tunnel is already running and you want to inspect the generated config)
 
 **Bastion-side deploy artifacts** (manual install on the bastion VPS — see [`deploy/bastion/README.md`](../../deploy/bastion/README.md) for the procedure):
 
@@ -64,13 +69,13 @@ The schema is part of bastionhub's contract surface — upstream tools (e.g. the
 
 ## What's NOT here yet
 
-- **macOS endpoint setup** via launchd. The endpoint install/setup paths are Linux-only; macOS endpoints need manual launchd plists.
 - **Cross-platform engineer-laptop support (Windows).** Engineer-side commands work on Go's supported platforms but `bastionhub ssh` currently uses `syscall.Exec` (Unix-only) — needs a small refactor for Windows.
 - **`docs/reference/` content** — SSH bastion + reverse-tunnel primer, contract docs, Pattern B walk-through. Backlog.
 - **CI/CD** — no GitHub Actions yet.
 - **Distribution** — no Homebrew tap; install from source only.
 ## Recently landed
 
+- **2026-05-29** — macOS endpoint via launchd shipped. `bastionhub endpoint install` and `setup` now dispatch on `runtime.GOOS`: Linux gets the existing systemd + apt/dnf/yum/apk path; macOS gets a new launchd + brew + per-user `~/.bastionhub-tunnel/` + `~/Library/LaunchAgents/com.roselabs.bastionhub-tunnel.plist` path. Setup gains a `--dry-run` flag (print the unit/plist + commands without writing or loading) — useful when a tunnel is already running and you want to inspect the generated config without disrupting it. Verified end-to-end on perso-mbp: install created `~/.bastionhub-tunnel/` + ed25519 key; `setup --dry-run` produced a valid plist with Apple Silicon brew prefix (`/opt/homebrew/bin/autossh`), per-user paths throughout, all launchd keys present. Patrick's existing hand-written plist untouched (additive migration policy).
 - **2026-05-29** — Foundational sshd drop-in shipped: `deploy/bastion/10-bastionhub.conf` (CA trust + `Match User gw-tunnel` + `Match User gw-user`). Combined with the existing optional Pattern B drop-in, a fresh bastion can now be brought up from `git clone` per the procedure in [`deploy/bastion/README.md`](../../deploy/bastion/README.md) — no more "lives manually on Patrick's bastion" caveat for the substrate-completeness story.
 - **2026-05-29** — Live deployment cutover from `gwctl`. `bastionhub` binary installed at `~/.local/bin/bastionhub` on Patrick's perso-mbp; `~/.config/bastionhub/endpoints.yaml` migrated from `~/.config/gwctl/gateways.yaml` (3 endpoints: customer-002 placeholder, perso-mbp, work-laptop). End-to-end verified live: `bastionhub list/status` query the real bastion at `46.225.2.150`; `bastionhub ssh perso-mbp -- uptime` round-tripped successfully via cert auth. Old `gwctl` binary removed.
 

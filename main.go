@@ -432,16 +432,17 @@ func endpointEnrollCmd(_ context.Context, cmd *cli.Command) error {
 	fmt.Printf("\n✓ endpoint %q enrolled\n  port:   %d\n  user:   %s\n  cert:   %s\n  valid:  %s\n  key-id: %s\n\n",
 		name, port, user, certFile, valid, keyID)
 	fmt.Println("Next:")
-	fmt.Printf("  1. Ship the cert back to the endpoint:\n")
-	fmt.Printf("       scp %s endpoint-device:/etc/bastionhub-tunnel/id_ed25519-cert.pub\n", certFile)
-	fmt.Printf("  2. On the endpoint device:\n")
-	fmt.Printf("       sudo bastionhub endpoint setup --port %d --bastion <bastion-host>\n", port)
+	fmt.Printf("  1. Ship the cert back to the endpoint (path depends on its OS):\n")
+	fmt.Printf("       Linux:  scp %s endpoint:/etc/bastionhub-tunnel/id_ed25519-cert.pub\n", certFile)
+	fmt.Printf("       macOS:  scp %s endpoint:~/.bastionhub-tunnel/id_ed25519-cert.pub\n", certFile)
+	fmt.Printf("  2. On the endpoint device, run setup (sudo on Linux; no sudo on macOS):\n")
+	fmt.Printf("       bastionhub endpoint setup --port %d --bastion <bastion-host>\n", port)
 	fmt.Printf("  3. From this laptop, verify: `bastionhub status`\n")
 	return nil
 }
 
 // -----------------------------------------------------------------------------
-// Endpoint install / setup — runs ON the endpoint device, Linux only
+// Endpoint install / setup — runs ON the endpoint device (Linux or macOS)
 // -----------------------------------------------------------------------------
 
 func sanitizeForComment(s string) string {
@@ -454,7 +455,35 @@ func sanitizeForComment(s string) string {
 	return b.String()
 }
 
-func installAutossh() error {
+// endpointInstallCmd dispatches on GOOS.
+func endpointInstallCmd(ctx context.Context, cmd *cli.Command) error {
+	switch runtime.GOOS {
+	case "linux":
+		return endpointInstallLinux(ctx, cmd)
+	case "darwin":
+		return endpointInstallDarwin(ctx, cmd)
+	default:
+		return cli.Exit("`bastionhub endpoint install` only supports Linux and macOS (current OS: "+runtime.GOOS+")", 1)
+	}
+}
+
+// endpointSetupCmd dispatches on GOOS.
+func endpointSetupCmd(ctx context.Context, cmd *cli.Command) error {
+	switch runtime.GOOS {
+	case "linux":
+		return endpointSetupLinux(ctx, cmd)
+	case "darwin":
+		return endpointSetupDarwin(ctx, cmd)
+	default:
+		return cli.Exit("`bastionhub endpoint setup` only supports Linux and macOS (current OS: "+runtime.GOOS+")", 1)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Linux — systemd + apt/dnf/yum/apk + /etc/bastionhub-tunnel/
+// -----------------------------------------------------------------------------
+
+func installAutosshLinux() error {
 	for _, mgr := range []struct {
 		bin     string
 		preArgs [][]string
@@ -482,17 +511,14 @@ func installAutossh() error {
 	return fmt.Errorf("no supported package manager (need apt-get / dnf / yum / apk)")
 }
 
-func endpointInstallCmd(_ context.Context, _ *cli.Command) error {
-	if runtime.GOOS != "linux" {
-		return cli.Exit("`bastionhub endpoint install` only supports Linux endpoints (current OS: "+runtime.GOOS+")", 1)
-	}
+func endpointInstallLinux(_ context.Context, _ *cli.Command) error {
 	if os.Geteuid() != 0 {
-		return cli.Exit("must run as root: `sudo bastionhub endpoint install`", 1)
+		return cli.Exit("on Linux, must run as root: `sudo bastionhub endpoint install`", 1)
 	}
 
 	if _, err := exec.LookPath("autossh"); err != nil {
 		fmt.Println("Installing autossh…")
-		if err := installAutossh(); err != nil {
+		if err := installAutosshLinux(); err != nil {
 			return cli.Exit(fmt.Sprintf("autossh install failed: %v", err), 1)
 		}
 	} else {
@@ -531,17 +557,14 @@ func endpointInstallCmd(_ context.Context, _ *cli.Command) error {
 	fmt.Println("  1. Ship the pubkey to the engineer's laptop, then run there:")
 	fmt.Printf("       bastionhub endpoint enroll <name> --pubkey-file <path>\n")
 	fmt.Println("  2. Note the assigned port (from the enroll output) and the bastion hostname.")
-	fmt.Println("  3. Ship the resulting -cert.pub back here next to id_ed25519, then:")
+	fmt.Printf("  3. Ship the resulting -cert.pub back here next to %s, then:\n", endpointKeyPath)
 	fmt.Println("       sudo bastionhub endpoint setup --port <N> --bastion <host>")
 	return nil
 }
 
-func endpointSetupCmd(_ context.Context, cmd *cli.Command) error {
-	if runtime.GOOS != "linux" {
-		return cli.Exit("`bastionhub endpoint setup` only supports Linux endpoints", 1)
-	}
+func endpointSetupLinux(_ context.Context, cmd *cli.Command) error {
 	if os.Geteuid() != 0 {
-		return cli.Exit("must run as root: `sudo bastionhub endpoint setup ...`", 1)
+		return cli.Exit("on Linux, must run as root: `sudo bastionhub endpoint setup ...`", 1)
 	}
 	port := int(cmd.Int("port"))
 	bastion := cmd.String("bastion")
@@ -583,6 +606,12 @@ RestartSec=10
 WantedBy=multi-user.target
 `, port, endpointKeyPath, endpointKnownHosts, port, bastionUser, bastion)
 
+	if cmd.Bool("dry-run") {
+		fmt.Printf("--dry-run: would write %s:\n\n%s\n", endpointServiceUnit, unit)
+		fmt.Println("--dry-run: would run: systemctl daemon-reload && systemctl enable --now bastionhub-tunnel.service")
+		return nil
+	}
+
 	if err := os.WriteFile(endpointServiceUnit, []byte(unit), 0o644); err != nil {
 		return cli.Exit(err.Error(), 1)
 	}
@@ -598,6 +627,206 @@ WantedBy=multi-user.target
 	out, _ := exec.Command("systemctl", "status", "bastionhub-tunnel.service", "--no-pager", "-l").CombinedOutput()
 	fmt.Println(string(out))
 	fmt.Println("Done. From the engineer laptop: `bastionhub status` to verify UP.")
+	return nil
+}
+
+// -----------------------------------------------------------------------------
+// macOS — launchd + brew + per-user ~/.bastionhub-tunnel + ~/Library/LaunchAgents
+// -----------------------------------------------------------------------------
+
+const darwinLaunchLabel = "com.roselabs.bastionhub-tunnel"
+
+func darwinKeyDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".bastionhub-tunnel")
+}
+
+func darwinKeyPath() string {
+	return filepath.Join(darwinKeyDir(), "id_ed25519")
+}
+
+func darwinKnownHostsPath() string {
+	return filepath.Join(darwinKeyDir(), "known_hosts")
+}
+
+func darwinLaunchAgentPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Library", "LaunchAgents", darwinLaunchLabel+".plist")
+}
+
+func darwinLogDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Library", "Logs", "bastionhub")
+}
+
+func endpointInstallDarwin(_ context.Context, _ *cli.Command) error {
+	if os.Geteuid() == 0 {
+		return cli.Exit("on macOS, run `bastionhub endpoint install` as your user (not sudo) — launchd agents live in ~/Library/LaunchAgents/", 1)
+	}
+
+	if _, err := exec.LookPath("brew"); err != nil {
+		return cli.Exit("Homebrew not found. Install from https://brew.sh, then re-run.", 1)
+	}
+
+	if _, err := exec.LookPath("autossh"); err != nil {
+		fmt.Println("Installing autossh via Homebrew…")
+		out, err := exec.Command("brew", "install", "autossh").CombinedOutput()
+		if err != nil {
+			return cli.Exit(fmt.Sprintf("brew install autossh failed: %v\n%s", err, out), 1)
+		}
+	} else {
+		fmt.Println("autossh already installed")
+	}
+
+	keyDir := darwinKeyDir()
+	if err := os.MkdirAll(keyDir, 0o700); err != nil {
+		return cli.Exit(err.Error(), 1)
+	}
+	keyPath := darwinKeyPath()
+	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+		host, _ := os.Hostname()
+		comment := fmt.Sprintf("bastionhub-%s-%s", sanitizeForComment(host), time.Now().Format("20060102"))
+		out, err := exec.Command("ssh-keygen", "-t", "ed25519", "-f", keyPath, "-N", "", "-C", comment, "-q").CombinedOutput()
+		if err != nil {
+			return cli.Exit(fmt.Sprintf("ssh-keygen failed: %v\n%s", err, out), 1)
+		}
+		fmt.Println("Generated", keyPath)
+	} else {
+		fmt.Println("Key exists at", keyPath, "(reusing)")
+	}
+
+	pubkey, err := os.ReadFile(keyPath + ".pub")
+	if err != nil {
+		return cli.Exit(err.Error(), 1)
+	}
+	pubkeyStr := strings.TrimSpace(string(pubkey))
+
+	fmt.Println()
+	fmt.Println("============================================================")
+	fmt.Println("  Public key (ship this to your engineer):")
+	fmt.Println("============================================================")
+	fmt.Println(pubkeyStr)
+	fmt.Println("============================================================")
+	fmt.Println()
+	fmt.Println("Next steps:")
+	fmt.Println("  1. Ship the pubkey to the engineer's laptop, then run there:")
+	fmt.Printf("       bastionhub endpoint enroll <name> --pubkey-file <path>\n")
+	fmt.Println("  2. Note the assigned port (from the enroll output) and the bastion hostname.")
+	fmt.Printf("  3. Ship the resulting -cert.pub back here next to %s, then:\n", keyPath)
+	fmt.Println("       bastionhub endpoint setup --port <N> --bastion <host>")
+	return nil
+}
+
+func endpointSetupDarwin(_ context.Context, cmd *cli.Command) error {
+	if os.Geteuid() == 0 {
+		return cli.Exit("on macOS, run `bastionhub endpoint setup` as your user (not sudo)", 1)
+	}
+	port := int(cmd.Int("port"))
+	bastion := cmd.String("bastion")
+	bastionUser := cmd.String("bastion-user")
+	if bastionUser == "" {
+		bastionUser = "gw-tunnel"
+	}
+	if port == 0 || bastion == "" {
+		return cli.Exit("--port and --bastion are required", 1)
+	}
+
+	keyPath := darwinKeyPath()
+	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+		return cli.Exit(fmt.Sprintf("no key at %s — run `bastionhub endpoint install` first", keyPath), 1)
+	}
+	certPath := keyPath + "-cert.pub"
+	if _, err := os.Stat(certPath); os.IsNotExist(err) {
+		fmt.Printf("Note: no cert at %s — autossh will rely on raw-key auth, which a cert-only bastion will reject.\n", certPath)
+		fmt.Printf("Run `bastionhub endpoint enroll <name> --pubkey-file %s.pub` on the engineer laptop, then ship the resulting -cert.pub back here.\n\n", keyPath)
+	}
+
+	brewPrefixOut, err := exec.Command("brew", "--prefix").Output()
+	if err != nil {
+		return cli.Exit("can't detect brew prefix — is Homebrew installed? Run `bastionhub endpoint install` first", 1)
+	}
+	brewPrefix := strings.TrimSpace(string(brewPrefixOut))
+	autosshPath := filepath.Join(brewPrefix, "bin", "autossh")
+	if _, err := os.Stat(autosshPath); os.IsNotExist(err) {
+		return cli.Exit(fmt.Sprintf("autossh not found at %s — run `bastionhub endpoint install` first", autosshPath), 1)
+	}
+
+	logDir := darwinLogDir()
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return cli.Exit(err.Error(), 1)
+	}
+	knownHostsPath := darwinKnownHostsPath()
+
+	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>%s</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>%s</string>
+        <string>-M</string><string>0</string>
+        <string>-N</string>
+        <string>-i</string><string>%s</string>
+        <string>-o</string><string>IdentitiesOnly=yes</string>
+        <string>-o</string><string>StrictHostKeyChecking=accept-new</string>
+        <string>-o</string><string>UserKnownHostsFile=%s</string>
+        <string>-o</string><string>ServerAliveInterval=30</string>
+        <string>-o</string><string>ServerAliveCountMax=3</string>
+        <string>-o</string><string>ExitOnForwardFailure=yes</string>
+        <string>-R</string><string>%d:localhost:22</string>
+        <string>%s@%s</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AUTOSSH_GATETIME</key><string>30</string>
+        <key>AUTOSSH_LOGFILE</key><string>%s/autossh.log</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>%s/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>%s/stderr.log</string>
+</dict>
+</plist>
+`, darwinLaunchLabel, autosshPath, keyPath, knownHostsPath, port, bastionUser, bastion, logDir, logDir, logDir)
+
+	plistPath := darwinLaunchAgentPath()
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		return cli.Exit(err.Error(), 1)
+	}
+
+	if cmd.Bool("dry-run") {
+		fmt.Printf("--dry-run: would write %s:\n\n%s\n", plistPath, plist)
+		fmt.Printf("--dry-run: would run: launchctl bootstrap gui/%d %s\n", os.Getuid(), plistPath)
+		return nil
+	}
+
+	// If already loaded, bootout first (idempotent re-setup). Failure is OK
+	// if it wasn't loaded.
+	if _, err := os.Stat(plistPath); err == nil {
+		_ = exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d", os.Getuid()), plistPath).Run()
+	}
+
+	if err := os.WriteFile(plistPath, []byte(plist), 0o644); err != nil {
+		return cli.Exit(err.Error(), 1)
+	}
+	fmt.Println("Wrote", plistPath)
+
+	bootstrapOut, err := exec.Command("launchctl", "bootstrap", fmt.Sprintf("gui/%d", os.Getuid()), plistPath).CombinedOutput()
+	if err != nil {
+		return cli.Exit(fmt.Sprintf("launchctl bootstrap failed: %v\n%s", err, bootstrapOut), 1)
+	}
+
+	time.Sleep(2 * time.Second)
+
+	listOut, _ := exec.Command("launchctl", "print", fmt.Sprintf("gui/%d/%s", os.Getuid(), darwinLaunchLabel)).CombinedOutput()
+	fmt.Println()
+	fmt.Println(string(listOut))
+	fmt.Println("Done. From the engineer laptop: `bastionhub status` to verify UP.")
+	fmt.Printf("Logs: %s/{stdout,stderr,autossh}.log\n", logDir)
 	return nil
 }
 
@@ -672,16 +901,17 @@ func main() {
 					},
 					{
 						Name:   "install",
-						Usage:  "[endpoint-side, Linux] install autossh + generate key + print pubkey",
+						Usage:  "[endpoint-side, Linux/macOS] install autossh + generate key + print pubkey",
 						Action: endpointInstallCmd,
 					},
 					{
 						Name:  "setup",
-						Usage: "[endpoint-side, Linux] write systemd unit and start the tunnel",
+						Usage: "[endpoint-side, Linux/macOS] write service unit/plist and start the tunnel",
 						Flags: []cli.Flag{
 							&cli.IntFlag{Name: "port", Usage: "the port allocated by enroll/register", Required: true},
 							&cli.StringFlag{Name: "bastion", Usage: "the bastion's public hostname or IP", Required: true},
 							&cli.StringFlag{Name: "bastion-user", Usage: "the bastion-side user (default: gw-tunnel)", Value: "gw-tunnel"},
+							&cli.BoolFlag{Name: "dry-run", Usage: "print the service unit / plist + commands without writing or loading"},
 						},
 						Action: endpointSetupCmd,
 					},

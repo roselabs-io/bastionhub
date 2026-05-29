@@ -51,9 +51,14 @@ bastionhub init
 bastionhub endpoint enroll perso-mbp --pubkey-file ./perso-mbp.pub
 # → outputs the assigned port + ships you a cert file to deliver to the endpoint
 
-# 3. On the endpoint device (Linux), once the cert is in place:
-sudo bastionhub endpoint install   # installs autossh + generates a key (if not run via enroll)
+# 3. On the endpoint device, once the cert is in place:
+#    Linux (needs sudo, uses systemd + apt/dnf/yum/apk):
+sudo bastionhub endpoint install
 sudo bastionhub endpoint setup --port 12001 --bastion bastion.example.com
+#    macOS (per-user, no sudo, uses launchd + brew):
+bastionhub endpoint install
+bastionhub endpoint setup --port 12001 --bastion bastion.example.com
+#    Both support --dry-run on setup for inspection without writing/loading.
 
 # 4. Daily use — from the engineer laptop:
 bastionhub list                    # show configured endpoints
