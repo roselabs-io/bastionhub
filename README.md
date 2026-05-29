@@ -2,7 +2,7 @@
 
 Self-hosted SSH bastion + reverse-tunnel substrate. Pairs with [sshca](https://github.com/roselabs-io/sshca) for cert auth.
 
-**Status:** Pre-release. v0.1.0-dev — core endpoint management commands working; bastion-side setup is documented + scripted but not yet wrapped in CLI.
+**v0.1.0** — initial release. Single Go binary, two deps (`urfave/cli/v3` + `yaml.v3`). Linux + macOS + Windows.
 
 ## What it does
 
@@ -17,34 +17,41 @@ Self-hosted SSH bastion + reverse-tunnel substrate. Pairs with [sshca](https://g
 Substrate only. Three things bastionhub explicitly does NOT do:
 
 - **No CA / cert mechanics.** Shells out to [sshca](https://github.com/roselabs-io/sshca) for signing host and tunnel certs. Bastionhub never holds CA private keys.
-- **No multi-tenant policy / registry schema.** No concept of "customer" or "role" — just tunnel endpoints. Upstream tools (e.g. the gateway OT product) compile their richer registries down to bastionhub's local config.
-- **No other substrates.** No Tailscale, WireGuard, or DERP. SSH-bastion + reverse-tunnel only. If those substrates become interesting, they get their own tools.
+- **No multi-tenant policy / registry schema.** No concept of "customer" or "role" — just tunnel endpoints. Upstream tools (e.g. an OT-integrator product layer) compile their richer registries down to bastionhub's local config.
+- **No other substrates.** No Tailscale, WireGuard, or DERP. SSH-bastion + reverse-tunnel only.
 
 ## Install
 
-From source (until Homebrew tap lands):
+### Homebrew (macOS + Linuxbrew)
+
+```sh
+brew tap roselabs-io/tools
+brew install bastionhub
+brew install sshca       # required runtime dependency
+```
+
+### From source
 
 ```sh
 git clone https://github.com/roselabs-io/bastionhub.git
 cd bastionhub
 go build -o bastionhub .       # Linux, macOS
-go build -o bastionhub.exe .   # Windows (PowerShell)
+go build -o bastionhub.exe .   # Windows
 ```
 
-Cross-compiled binaries for windows-amd64 / windows-arm64 / linux-amd64 / darwin-arm64 build cleanly from any platform; CI/Homebrew tap distribution is on the backlog.
+Plus `sshca` from [github.com/roselabs-io/sshca](https://github.com/roselabs-io/sshca) installed somewhere on `PATH`.
 
-**Engineer laptop:** Linux, macOS, and Windows all work for the engineer-side commands (`list`, `status`, `ssh`, `endpoint register/enroll/unregister`).
+### Pre-built binaries
 
-**Endpoint device** (where the reverse tunnel autossh service runs): Linux + macOS are supported via `bastionhub endpoint install/setup`. Windows as an endpoint is out of scope — see [docs/planning/backlog.md](docs/planning/backlog.md) "Parked" for the rationale.
+Download from [GitHub Releases](https://github.com/roselabs-io/bastionhub/releases) — `.tar.gz` for Unix, `.zip` for Windows, six platforms (linux/darwin/windows × amd64/arm64), SHA-256 checksums attached.
 
-Bastionhub depends on `sshca` being in `PATH` for cert operations:
+## Platform support
 
-```sh
-git clone https://github.com/roselabs-io/sshca.git
-cd sshca
-go build -o sshca .
-sudo mv sshca /usr/local/bin/
-```
+| | Engineer-side (`list` / `status` / `ssh` / `endpoint register/enroll/unregister`) | Endpoint-side (`endpoint install` / `setup`) |
+|---|---|---|
+| Linux | ✓ | ✓ (systemd + apt/dnf/yum/apk) |
+| macOS | ✓ | ✓ (launchd + Homebrew, per-user, no sudo) |
+| Windows | ✓ | ✗ (out of scope — Windows boxes are typically reached *behind* an endpoint, not as one) |
 
 ## Quick start
 
@@ -59,26 +66,42 @@ bastionhub endpoint enroll my-endpoint --pubkey-file ./my-endpoint.pub
 # → outputs the assigned port + ships you a cert file to deliver to the endpoint
 
 # 3. On the endpoint device, once the cert is in place:
-#    Linux (needs sudo, uses systemd + apt/dnf/yum/apk):
+#    Linux (needs sudo, systemd + apt/dnf/yum/apk):
 sudo bastionhub endpoint install
 sudo bastionhub endpoint setup --port 12001 --bastion bastion.example.com
-#    macOS (per-user, no sudo, uses launchd + brew):
+#    macOS (per-user, no sudo, launchd + brew):
 bastionhub endpoint install
 bastionhub endpoint setup --port 12001 --bastion bastion.example.com
 #    Both support --dry-run on setup for inspection without writing/loading.
 
 # 4. Daily use — from the engineer laptop:
-bastionhub list                    # show configured endpoints
-bastionhub status                  # query bastion for live tunnels
-bastionhub ssh my-endpoint           # ProxyJump via bastion
+bastionhub list                       # show configured endpoints
+bastionhub status                     # query bastion for live tunnels
+bastionhub ssh my-endpoint            # ProxyJump via bastion
+bastionhub ssh my-endpoint -- uptime  # one-off remote command
 ```
 
 The config lives at `~/.config/bastionhub/endpoints.yaml` (override with `$BASTIONHUB_CONFIG`).
 
+## Stability promises
+
+Pre-1.0: minor releases may break things. Breaking changes will be called out in [CHANGELOG.md](CHANGELOG.md) with the rationale.
+
+Post-1.0: [SemVer](https://semver.org/). Three surfaces are versioned:
+
+- **CLI grammar** — subcommand names, flag names, exit codes
+- **`endpoints.yaml` schema** — fields documented in [CLAUDE.md](CLAUDE.md) "Contract surface"
+- **Deploy artifact identifiers** — `bastionhub-tunnel.service` (systemd unit), `com.roselabs.bastionhub-tunnel` (launchd label), `10-bastionhub.conf` / `30-passthrough-acl.conf` (sshd drop-ins)
+
+## Roadmap
+
+- **v0.2** — `roselabs-io/homebrew-tools` tap; tagged release pipeline polish.
+- **Soon** — `bastionhub bastion verify` (sanity-check a bastion VPS's sshd drop-ins, role users, KRL).
+- **Later** — registry-driven Pattern B (the current `principal-to-acl.sh` emits a fixed list; future versions read a config file). OpenWrt endpoint support.
+
 ## See also
 
-- [docs/](docs/) — full documentation tree
-- [docs/decisions/inherited.md](docs/decisions/inherited.md) — upstream ADRs that motivated this tool
+- [sshca](https://github.com/roselabs-io/sshca) — cert tool bastionhub depends on
 - [deploy/bastion/](deploy/bastion/) — sshd drop-ins + Pattern B `AuthorizedPrincipalsCommand` script for the bastion VPS
 
 ## License

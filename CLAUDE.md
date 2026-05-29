@@ -1,63 +1,96 @@
-# bastionhub — Project Context
+# bastionhub — contributor / agent context
 
-Self-hosted SSH bastion + reverse-tunnel substrate. Pairs with [sshca](https://github.com/roselabs-io/sshca) for cert auth. Single Go binary, two intended deps (`urfave/cli/v3` + `gopkg.in/yaml.v3`). Substrate-narrow scope; no policy, no registry, no observability.
+Self-hosted SSH bastion + reverse-tunnel substrate. Pairs with [sshca](https://github.com/roselabs-io/sshca) for cert auth. Single Go binary, two intended deps (`urfave/cli/v3` v3.9.0 + `gopkg.in/yaml.v3` v3.0.1). Substrate-narrow scope: no policy, no registry, no observability.
 
-**Status:** Pre-release; v0.1.0-dev. Code migrated from the upstream `gateway` repo per [docs/decisions/inherited.md](docs/decisions/inherited.md).
-
-## Read order for a fresh agent session
+## Read order
 
 1. This file
-2. [docs/current-state.md](docs/current-state.md) — what works right now
-3. [docs/decisions/](docs/decisions/) — bastionhub's own ADRs + [inherited.md](docs/decisions/inherited.md) for upstream decisions
-4. [docs/planning/backlog.md](docs/planning/backlog.md) — open work
-5. [deploy/bastion/](deploy/bastion/) — sshd drop-ins for the bastion VPS
+2. [README.md](README.md) — install + Quick start + Stability promises
+3. [CHANGELOG.md](CHANGELOG.md) — what shipped per release
+4. [main.go](main.go) + [main_test.go](main_test.go) — engineer-side + dispatch + Linux/Darwin install/setup
+5. [deploy/bastion/](deploy/bastion/) — bastion-VPS sshd drop-ins + Pattern B script
 
 ## Project shape
 
-**What this is:** a small CLI + deploy scripts for running a self-hosted SSH bastion with reverse tunnels from a fleet of "endpoints" (boxes behind NAT that dial home to the bastion). Cert auth via [sshca](https://github.com/roselabs-io/sshca). Endpoint OS: Linux for the auto-install path; macOS endpoints work but need manual launchd setup (TODO).
+**What this is:** a small CLI + deploy scripts for running a self-hosted SSH bastion with reverse tunnels from a fleet of "endpoints" (boxes behind NAT that dial home to the bastion). Cert auth via `sshca`. Engineer-side commands cross-platform; endpoint-side `install`/`setup` Linux + macOS.
 
 **What this isn't:**
 
-- A cert authority — shells out to `sshca` for everything cert-related. Upstream ADR-006, upstream ADR-008.
-- A policy engine — no roles, no customers, no projects. Just tunnel endpoints. Schema-rich registries live one layer up.
-- A multi-substrate connectivity tool — SSH-bastion + reverse-tunnel only. No Tailscale, no WireGuard.
+- A cert authority. Shells out to `sshca` for every cert operation.
+- A policy engine. No roles, no customers, no projects. Just tunnel endpoints.
+- A multi-substrate connectivity tool. SSH-bastion + reverse-tunnel only.
 
 ## Key principles
 
-1. **Substrate-narrow scope.** Run the SSH-bastion + reverse-tunnel pattern well, with sane defaults. Anything richer (policy, audit beyond connection logs, fleet observability) belongs upstream.
-2. **Cert auth via `sshca`.** No in-process signing. `sshca` is a required runtime dependency; subprocess invocation.
-3. **Schema-neutral local config.** `endpoints.yaml` knows about port, user, identity, description. It does NOT know about customer, role, or principal vocabulary. Upstream tools compile their richer registries down to this.
-4. **Stock OpenSSH on both ends.** No custom sshd, no patches. Drop-ins + `AuthorizedPrincipalsCommand` for per-principal scoping (Pattern B; see upstream ADR-004).
+1. **Substrate-narrow scope.** Run the SSH-bastion + reverse-tunnel pattern well. Anything richer (policy, audit beyond connection logs, fleet observability) belongs upstream.
+2. **Cert auth via `sshca`.** No in-process signing. `sshca` is a required runtime dependency (`bastionhub endpoint enroll` shells out to it).
+3. **Schema-neutral local config.** `endpoints.yaml` carries port, user, identity, description. It does NOT know about customer, role, or principal vocabulary.
+4. **Stock OpenSSH on both ends.** No custom sshd, no patches. Drop-ins + `AuthorizedPrincipalsCommand` for per-principal scoping (Pattern B).
 5. **Reverse tunnels via autossh + systemd / launchd.** Battle-tested, not invented here.
 
-## Contract surface (semver discipline)
+## Contract surface (semver-disciplined)
 
-bastionhub exposes two contracts that downstream consumers may depend on:
+Two things downstream tools depend on. Breaking changes to either require a major version bump.
 
-- **CLI grammar** — subcommands (`ssh`, `list`, `status`, `endpoint *`), flags, exit codes.
-- **`endpoints.yaml` schema** — the local-config format that upstream tools (e.g. the `gateway` product) compile down to.
+**CLI grammar:** subcommand names, flag names, argument positions, exit codes. `bastionhub --help` is canonical.
 
-Breaking changes to either require a major version bump and a deprecation cycle. Details land in `docs/reference/contracts.md` as the surface stabilizes.
+**`endpoints.yaml` schema** at `~/.config/bastionhub/endpoints.yaml` (or `$BASTIONHUB_CONFIG`):
 
-## Doc maintenance
+```yaml
+bastion_alias: <string>      # default "bastion"; ProxyJump target
+admin_alias:   <string>      # default "bastion-root"; for status/admin queries
 
-Same trigger-action discipline as the upstream `gateway` repo:
+endpoints:
+  <name>:
+    port:        <int>       # required; 12001-12099 by convention
+    user:        <string>    # required
+    identity:    <string>    # optional; path to SSH key for laptop→endpoint hop
+    description: <string>    # optional
+```
 
-- **Runtime change** → update [docs/current-state.md](docs/current-state.md)
-- **CLI change** → update [README.md](README.md) examples
-- **Non-obvious decision** → write an ADR in [docs/decisions/](docs/decisions/)
-- **Backlog item ships** → strip from [docs/planning/backlog.md](docs/planning/backlog.md); add one-liner to current-state.md "Recently landed"
+Unknown keys are tolerated (new fields may appear in minor releases). File mode is `0o600`.
+
+**Deploy artifact identifiers** (external monitoring may key on these):
+
+- systemd unit: `bastionhub-tunnel.service`
+- launchd plist label: `com.roselabs.bastionhub-tunnel`
+- sshd drop-in filenames: `10-bastionhub.conf`, `30-passthrough-acl.conf`
+
+## Don't re-walk these
+
+- **Don't use `Match Principal` in sshd_config.** Not valid OpenSSH syntax — `Match` only accepts `User`, `Group`, `Host`, `LocalAddress`, `LocalPort`, `RDomain`, `Address`. Use `Match User <role>` blocks; the cert's principal list matches the target Unix username by default.
+- **Don't add YAML frontmatter to Markdown docs.** Filename + path is enough.
+- **Don't add registry / policy concepts to `endpoints.yaml`.** No `customer`, no `role`. Those belong in the consumer that produces this file.
+- **Don't bring back `syscall.Exec` in `sshCmd`.** It's Unix-only and breaks Windows. The current `exec.Command + Run()` pattern with inherited stdio is the cross-platform-correct shape.
+- **`loadConfig` must re-init the `Endpoints` map post-Unmarshal.** YAML with `endpoints:` having only commented children unmarshals to a nil map; without re-init, the first register panics. Covered by `TestLoadConfig_NilMapRegression`.
+
+## File structure
+
+```
+bastionhub/
+├── README.md           # public face: install, Quick start, Stability promises
+├── CHANGELOG.md        # per-release
+├── CLAUDE.md           # this file
+├── LICENSE             # MIT
+├── main.go             # engineer-side commands + Linux/Darwin install/setup
+├── main_test.go        # unit + regression tests
+├── go.mod / go.sum
+├── .github/workflows/  # CI + release
+└── deploy/bastion/     # sshd drop-ins shipped to the bastion VPS
+    ├── 10-bastionhub.conf
+    ├── 30-passthrough-acl.conf
+    ├── principal-to-acl.sh
+    └── README.md
+```
 
 ## Conventions
 
-- **Filenames:** kebab-case. ADRs: `ADR-NNN-short-description.md` (3-digit zero-padded, monotonic; bastionhub's own series starts at 001).
-- **Dates:** ISO `YYYY-MM-DD`.
-- **Cross-references:** relative Markdown links inside this repo; absolute GitHub URLs for upstream `gateway` ADRs (see [docs/decisions/inherited.md](docs/decisions/inherited.md)).
-- **No frontmatter** on Markdown docs.
+- **Filenames:** kebab-case
+- **Dates:** ISO `YYYY-MM-DD`
+- **No YAML frontmatter** on Markdown docs
+- **Version variable** in `main.go` is `var` not `const` so release builds inject the tag via `-ldflags "-X main.version=<tag>"`
 
 ## See also
 
-- [README.md](README.md) — public overview
-- [docs/decisions/inherited.md](docs/decisions/inherited.md) — upstream ADRs
-- [github.com/roselabs-io/sshca](https://github.com/roselabs-io/sshca) — cert tool bastionhub depends on
-- The OT-integrator product layer that consumes bastionhub (internal — not OSS).
+- [sshca](https://github.com/roselabs-io/sshca) — cert tool bastionhub depends on. `endpoint enroll` shells out to `sshca cert sign`.
+- Internal design notes, roadmap, current operational state, and inherited design rationale live in a private workspace (not public).
