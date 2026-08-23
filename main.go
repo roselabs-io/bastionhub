@@ -885,12 +885,12 @@ func main() {
 			},
 			{
 				Name:      "invite",
-				Usage:     "[engineer-side] mint a single-use enrollment code, then sign the key it brings back",
+				Usage:     "[engineer-side] create a single-use enrollment code and sign the key it returns",
 				ArgsUsage: "<name>",
-				Description: "Mints an invite on a `bastionhub serve` instance and prints a one-line command\n" +
-					"to read to whoever is at the far end. Waits for their public key, signs it\n" +
-					"locally via sshca, and sends the certificate back. The CA never leaves this\n" +
-					"machine and the service never sees a private key.",
+				Description: "Creates a single-use invite on a `bastionhub serve` instance and prints the\n" +
+					"command for the far end to run. Waits for the far end's public key, displays\n" +
+					"its fingerprint for confirmation, signs it locally via sshca, and returns the\n" +
+					"certificate through the service. Signing requires this machine to be online.",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "url", Usage: "public URL of `bastionhub serve` (or $BASTIONHUB_SERVE_URL)"},
 					&cli.StringFlag{Name: "admin-token", Usage: "admin token from `bastionhub serve` (or $BASTIONHUB_ADMIN_TOKEN)"},
@@ -909,11 +909,10 @@ func main() {
 			},
 			{
 				Name:  "serve",
-				Usage: "[bastion-side] run the invite/relay service",
-				Description: "Runs on the bastion VPS. Mints invite codes, serves the bootstrap script,\n" +
-					"and relays a public key to the operator and a certificate back. It holds no\n" +
-					"CA and signs nothing: a full compromise of this host yields public keys and\n" +
-					"expired codes.",
+				Usage: "[bastion-side] run the invite and relay service",
+				Description: "Runs on the bastion. Issues single-use invite codes, serves the bootstrap\n" +
+					"script at /j/<code>, and relays a public key to the operator and a signed\n" +
+					"certificate back. Stores no private material and cannot sign certificates.",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "bastion", Usage: "public hostname far-end devices dial for SSH (e.g. bastion.example.io)", Required: true},
 					&cli.StringFlag{Name: "listen", Usage: "address to listen on", Value: "127.0.0.1:8420"},

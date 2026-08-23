@@ -53,13 +53,13 @@ Download from [GitHub Releases](https://github.com/roselabs-io/bastionhub/releas
 | macOS | ✓ | ✓ (launchd + Homebrew, per-user, no sudo) | ✓ (launchd) |
 | Windows | ✓ | ✗ (needs autossh + a service wrapper) | ✓ (scheduled task) |
 
-The last column is the enrollment path added in v0.2. It needs nothing installed
-on the far end — no bastionhub, no autossh, no admin rights — because the
-bootstrap script uses only `ssh`, `ssh-keygen` and `curl` (or PowerShell's
-`iwr`), all of which ship with Windows 10/11, macOS and Linux. Persistence comes
-from systemd `Restart=always` / launchd `KeepAlive` / a scheduled task around
-plain `ssh`, with `ServerAliveInterval` doing the dead-peer detection autossh
-would otherwise provide.
+The last column is the enrollment path added in v0.2. It requires no software
+on the far end: the bootstrap script uses `ssh`, `ssh-keygen` and `curl` (or
+PowerShell's `iwr`) only. Persistence uses systemd `Restart=always`, launchd
+`KeepAlive`, or a Windows scheduled task around `ssh`, with
+`ServerAliveInterval` for dead-peer detection in place of autossh.
+
+The PowerShell path has not been tested on Windows.
 
 ## Quick start
 
@@ -91,138 +91,133 @@ bastionhub ssh my-endpoint -- uptime  # one-off remote command
 
 The config lives at `~/.config/bastionhub/endpoints.yaml` (override with `$BASTIONHUB_CONFIG`).
 
-## Standing up a bastion
+## Installing a bastion
 
-On a fresh Debian/Ubuntu VPS:
+On a Debian or Ubuntu server:
 
 ```sh
 curl -sSL https://raw.githubusercontent.com/roselabs-io/bastionhub/v0.2.0/deploy/install.sh \
     | sudo bash -s -- --domain bastion.example.io --acme-email you@example.io
 ```
 
-The URL is pinned to a tag rather than `main`: a script that gets piped into a
-root shell should not change because someone pushed a commit. Read it first —
-that is the point of a plain file in a public repo.
+The script creates the `gw-tunnel`, `gw-user` and `gw-passthrough` users,
+writes the sshd drop-in, installs the `bastionhub` binary, runs `bastionhub
+serve` under systemd, installs Caddy for TLS on `--domain`, and opens the
+required ufw ports. It prints an admin token on completion.
 
-Then ship it the CA public key from the machine that holds the CA:
+It does not install a certificate authority. Supply the CA public key
+separately:
 
 ```sh
 scp ca/user_ca.pub root@bastion.example.io:/etc/ssh/user_ca.pub
 ssh root@bastion.example.io 'sshd -t && systemctl reload ssh'
 ```
 
-That gives you the three restricted role users, sshd configured for certificate
-auth with each role scoped to what it needs, `bastionhub serve` under systemd,
-Caddy with automatic HTTPS, and an admin token for the operator's laptop.
+Options:
 
-Re-running is safe — every step checks before acting, and the admin token
-survives. `--skip-tls` when something else already terminates TLS on the host;
-if something else already owns `:80`/`:443` the script refuses rather than
-fighting it, and prints the proxy block you need. See
-[deploy/install.sh](deploy/install.sh) — it is meant to be read before it is
-piped into a shell.
+| | |
+|---|---|
+| `--domain <host>` | Required. Hostname devices dial and TLS is issued for. A bare IP is rejected unless `--skip-tls` is given, since no CA issues certificates for IP addresses. |
+| `--user-ca <path>` | Install the CA public key during setup. `-` reads stdin. |
+| `--acme-email <addr>` | Let's Encrypt contact address. |
+| `--skip-tls` | Do not install Caddy. Required if another service holds `:80`/`:443`; the script refuses to displace one. |
+| `--skip-sshd` | Do not modify sshd configuration. |
+| `--version <tag>` | Release to install. Default: latest. |
+| `--binary <path>` | Install a local binary instead of downloading a release. |
 
-**It never installs the CA.** The certificate authority stays on the operator's
-machine. A full compromise of the bastion yields public keys and expired invite
-codes, and cannot mint a certificate.
+The script is idempotent; re-running preserves the admin token. The URL is
+pinned to a release tag, so the file does not change between runs.
 
-## Enrolling a machine you don't control
+## Enrollment
 
-`bastionhub endpoint install/setup` works when you can get a shell on the device.
-When you can't — a controller on a customer's floor, with a technician on the
-phone — the problem is delivering a certificate to a machine nobody provisioned.
-Doing that by hand means generating a keypair *for* someone else and sending
-them a **private key**, which is not something to do over chat.
+`bastionhub endpoint install` and `endpoint setup` require a shell on the
+target machine and `bastionhub` installed there. `bastionhub serve` and
+`bastionhub invite` remove both requirements.
 
-`bastionhub serve` closes that gap. It runs on the bastion, mints single-use
-invite codes, and relays public material between the far end and you:
+`serve` runs on the bastion. It issues single-use invite codes, serves a
+bootstrap script, and relays a public key from the far end to the operator and
+a signed certificate back. It stores no private material and cannot sign.
 
 ```sh
-# On the bastion (once):
+# On the bastion:
 bastionhub serve --bastion bastion.example.io --listen 127.0.0.1:8420
-# → prints an admin token on first run. Put it on your laptop.
+# Prints an admin token on first run.
 
-# On your laptop, where the CA lives:
+# On the machine holding the CA:
 export BASTIONHUB_SERVE_URL=https://bastion.example.io
 export BASTIONHUB_ADMIN_TOKEN=<token>
 
 bastionhub invite tex-mmv2
 ```
 
-```
-Read this to whoever is on site (expires in 30 min):
+`invite` prints two commands, one per platform:
 
+```
     curl -sSL https://bastion.example.io/j/3DY2FNYT | sh      # mac / linux
     iwr -useb https://bastion.example.io/j/3DY2FNYT | iex     # windows
-
-Code: 3DY2-FNYT
-
-waiting for the far end… ✓ public key received
-
-  fingerprint: 256 SHA256:LIvVkKqGGYj2Jo8uhwo4IXHOlnc+7MGfZL8pRi+mwoQ (ED25519)
-  will sign as: principal=gw-tunnel valid=+52w port=12005
-
-Ask them to read their fingerprint back. Sign it? [y/N] y
-✓ certificate signed and sent
-
-✓ tex-mmv2 enrolled on port 12005
 ```
 
-The far end generates its own keypair and sends only the public half. Ask them
-to read the fingerprint back before you answer that prompt — it is the only
-thing tying the key you are about to sign to the person you are talking to.
+The far end runs one of them. The bootstrap script generates an ed25519
+keypair locally, submits the public key, waits for a certificate, and installs
+it. The private key does not leave that machine. The script requires only
+`ssh`, `ssh-keygen` and `curl` (or PowerShell's `iwr`), all of which ship with
+Windows 10/11, macOS and Linux.
 
-### The service never holds the CA
+`invite` displays the submitted key's SHA256 fingerprint and waits for
+confirmation before signing. The far end prints the same fingerprint, so it can
+be compared out of band. `--yes` skips the prompt.
 
-This is the design constraint, not an implementation detail. `serve` is a
-rendezvous point: it stores public keys and certificates and hands them between
-two parties who cannot otherwise reach each other. Signing happens on your
-laptop, where the CA is, exactly as `endpoint enroll` already does.
+Signing happens on the machine running `invite`, via `sshca cert sign`. That
+machine must be reachable while an invite is redeemed.
 
-If the bastion were fully compromised, the attacker would get a list of public
-keys and some expired codes. They could not mint a single certificate.
+### Shapes
 
-The cost of that property: **you have to be online when an invite is redeemed.**
-That is a direct consequence of the CA not being on the VPS, and it is the
-intended trade.
+`--shape` selects what the bootstrap script does after it installs the
+certificate, and determines the principal.
 
-### Three shapes
+| `--shape` | Principal | Default validity | Behaviour |
+|---|---|---|---|
+| `device` | `gw-tunnel` | `+52w` | Installs a systemd unit, launchd agent or scheduled task running `ssh -R`. Survives reboot. |
+| `session` | `gw-tunnel` | `+12h` | Runs `ssh -R` in the foreground and removes the key directory on exit. |
+| `access` | `gw-user` | `+12h` | Writes the certificate to `~/.ssh` and adds a `Host bastionhub` block to `~/.ssh/config`. Opens no tunnel and starts no service. |
 
-Two directions of access, and they are not interchangeable — `gw-tunnel` may
-listen but gets no shell and no local forwards; `gw-user` may open local
-forwards so ProxyJump works, but may not listen.
+`--principal` overrides the default and emits a warning when it does not match
+the shape. The mismatch is not rejected but does not work: sshd maps a
+certificate's principal to the target username, so a `gw-user` certificate
+cannot authenticate as `gw-tunnel`.
 
-| `--shape` | For | What it does | Principal | Default validity |
-|---|---|---|---|---|
-| `device` | A machine that must be **reachable** and stays — controller, gateway box | systemd / launchd / scheduled task around `ssh -R`; survives reboots | `gw-tunnel` | `+52w` |
-| `session` | A machine that must be reachable for **one sitting** | holds `ssh -R` in the foreground; closing the window removes the key | `gw-tunnel` | `+12h` |
-| `access` | A machine that needs to **reach** the fleet — your other laptop | writes a cert and an ssh config block; opens no tunnel and runs nothing | `gw-user` | `+12h` |
-
-The principal follows the shape automatically. Overriding it is allowed but
-warned about, because the mismatch is silent: a `gw-user` cert authenticates
-fine and then cannot open the tunnel the script just set up.
-
-### Access fans out
-
-An `access` cert is not bound to any endpoint. It authenticates to the bastion
-as `gw-user`, and from there ProxyJump reaches **any** port the bastion is
-listening on — including endpoints enrolled long after the cert was issued.
-
-So the second laptop is a one-time setup:
+An `access` certificate is not scoped to a specific endpoint. It authenticates
+as `gw-user`, which may forward to any port in the tunnel range, including
+endpoints enrolled after the certificate was issued. A single long-lived
+`access` certificate therefore covers the whole fleet:
 
 ```sh
 bastionhub invite my-work-laptop --shape access --valid +52w
 ```
 
-Every device you invite afterwards is reachable from it with no re-issue. The
-cert's validity window is the only thing that ends it — which is what `sshca
-cert revoke` and the KRL are for if it needs to end sooner.
+Use `sshca cert revoke` to end it before expiry.
 
-### Serving it
+### serve
 
-`serve` binds `127.0.0.1:8420` by default and expects a TLS-terminating proxy in
-front, since the invite line tells a stranger to pipe a URL into a shell. Pass
-`--tls-cert`/`--tls-key` to serve HTTPS directly instead.
+`serve` binds `127.0.0.1:8420` by default and expects TLS termination in front
+of it. `--tls-cert` and `--tls-key` serve HTTPS directly instead.
+
+| Flag | Default |
+|---|---|
+| `--bastion <host>` | required — the hostname far ends dial for SSH |
+| `--listen <addr>` | `127.0.0.1:8420` |
+| `--base-url <url>` | `https://<bastion>` |
+| `--tls-cert`, `--tls-key` | unset |
+
+State is written to `~/.config/bastionhub/invites.json`
+(`$BASTIONHUB_SERVE_STATE`). The admin token is generated on first run and
+stored at `~/.config/bastionhub/admin-token`
+(`$BASTIONHUB_ADMIN_TOKEN_FILE`), mode 0600.
+
+Invite codes are 8 characters drawn from a 31-symbol alphabet excluding `0`,
+`O`, `1`, `I` and `L`. They are single-use and expire after `--ttl` (default 30
+minutes). Unknown, expired, spent and revoked codes return identical responses.
+Repeated failed lookups from one address are rate-limited.
 
 ## Stability promises
 
