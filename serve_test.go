@@ -579,3 +579,27 @@ func TestPowerShellSessionCleansUpOnInterrupt(t *testing.T) {
 		t.Error("PowerShell session path has no finally{} — Ctrl-C would strand the key")
 	}
 }
+
+// The far end must not give up while its invite is still live. Hardcoding the
+// poll bound made `--ttl 2h` fail at 30 minutes with nothing actually wrong.
+func TestPollBoundTracksInviteTTL(t *testing.T) {
+	s := newTestServer(t)
+	now := time.Now().UTC()
+	for _, tc := range []struct{ ttl, minPolls time.Duration }{
+		{30 * time.Minute, 30 * time.Minute},
+		{2 * time.Hour, 2 * time.Hour},
+		{5 * time.Minute, 5 * time.Minute},
+	} {
+		inv := &Invite{Code: "TESTCODE", Name: "x", Port: 12005, Shape: shapeDevice,
+			CreatedAt: now, ExpiresAt: now.Add(tc.ttl)}
+		covered := time.Duration(pollsUntil(inv)) * pollInterval
+		if covered < tc.minPolls {
+			t.Errorf("ttl %v: script polls cover only %v", tc.ttl, covered)
+		}
+		for _, script := range []string{shellBootstrap(s.baseURL, inv), powershellBootstrap(s.baseURL, inv)} {
+			if strings.Contains(script, "900") {
+				t.Errorf("ttl %v: script still carries the hardcoded bound", tc.ttl)
+			}
+		}
+	}
+}

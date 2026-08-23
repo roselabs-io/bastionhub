@@ -36,6 +36,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -810,8 +811,25 @@ func shellBootstrap(baseURL string, inv *Invite) string {
 		"@@CODE@@", inv.Code,
 		"@@NAME@@", shellQuote(inv.Name),
 		"@@SHAPE@@", string(inv.Shape),
+		"@@POLLS@@", strconv.Itoa(pollsUntil(inv)),
 	)
 	return r.Replace(tmpl)
+}
+
+// pollsUntil returns how many 2-second polls cover the invite's remaining life.
+// Hardcoding this would mean a far end giving up while its invite is still
+// valid — the failure looks like "timed out" on one end and "never claimed" on
+// the other, with nothing actually wrong.
+func pollsUntil(inv *Invite) int {
+	remaining := time.Until(inv.ExpiresAt)
+	if inv.ExpiresAt.IsZero() {
+		remaining = defaultInviteTTL
+	}
+	n := int(remaining/pollInterval) + 15 // a little slack past expiry
+	if n < 30 {
+		n = 30
+	}
+	return n
 }
 
 const shellBootstrapCommon = `#!/bin/sh
@@ -859,7 +877,7 @@ echo "Waiting for the operator to sign (Ctrl-C to give up)..."
 i=0
 while : ; do
     i=$((i+1))
-    if [ "$i" -gt 900 ]; then echo "error: timed out waiting for a certificate" >&2; exit 1; fi
+    if [ "$i" -gt @@POLLS@@ ]; then echo "error: timed out waiting for a certificate" >&2; exit 1; fi
     RESP=$(curl -fsSL -w '\n%{http_code}' "$BASE/e/$CODE/cert" 2>/dev/null) || { sleep 2; continue; }
     STATUS=$(printf '%s' "$RESP" | tail -n1)
     BODY=$(printf '%s' "$RESP" | sed '$d')
@@ -956,6 +974,7 @@ func powershellBootstrap(baseURL string, inv *Invite) string {
 		"@@CODE@@", inv.Code,
 		"@@NAME@@", inv.Name,
 		"@@SHAPE@@", string(inv.Shape),
+		"@@POLLS@@", strconv.Itoa(pollsUntil(inv)),
 	)
 	return r.Replace(powershellBootstrapTmpl)
 }
@@ -993,7 +1012,7 @@ Invoke-RestMethod -Method Post -Uri "$Base/e/$Code/pubkey" -Body $pub | Out-Null
 
 Write-Host "Waiting for the operator to sign (Ctrl-C to give up)..."
 $resp = $null
-for ($i = 0; $i -lt 900; $i++) {
+for ($i = 0; $i -lt @@POLLS@@; $i++) {
     try {
         $r = Invoke-WebRequest -Uri "$Base/e/$Code/cert" -UseBasicParsing
         if ($r.StatusCode -eq 200) { $resp = $r.Content | ConvertFrom-Json; break }
