@@ -91,6 +91,37 @@ bastionhub ssh my-endpoint -- uptime  # one-off remote command
 
 The config lives at `~/.config/bastionhub/endpoints.yaml` (override with `$BASTIONHUB_CONFIG`).
 
+## Standing up a bastion
+
+On a fresh Debian/Ubuntu VPS:
+
+```sh
+curl -sSL https://get.roselabs.io/bastion | sudo bash -s -- \
+    --domain bastion.example.io --acme-email you@example.io
+```
+
+Then ship it the CA public key from the machine that holds the CA:
+
+```sh
+scp ca/user_ca.pub root@bastion.example.io:/etc/ssh/user_ca.pub
+ssh root@bastion.example.io 'sshd -t && systemctl reload ssh'
+```
+
+That gives you the three restricted role users, sshd configured for certificate
+auth with each role scoped to what it needs, `bastionhub serve` under systemd,
+Caddy with automatic HTTPS, and an admin token for the operator's laptop.
+
+Re-running is safe — every step checks before acting, and the admin token
+survives. `--skip-tls` when something else already terminates TLS on the host;
+if something else already owns `:80`/`:443` the script refuses rather than
+fighting it, and prints the proxy block you need. See
+[deploy/install.sh](deploy/install.sh) — it is meant to be read before it is
+piped into a shell.
+
+**It never installs the CA.** The certificate authority stays on the operator's
+machine. A full compromise of the bastion yields public keys and expired invite
+codes, and cannot mint a certificate.
+
 ## Enrolling a machine you don't control
 
 `bastionhub endpoint install/setup` works when you can get a shell on the device.
