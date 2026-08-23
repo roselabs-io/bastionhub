@@ -1,96 +1,85 @@
-# bastionhub — contributor / agent context
+# bastionhub — contributor notes
 
-SSH bastion and reverse-tunnel manager. Uses [sshca](https://github.com/roselabs-io/sshca) for certificate operations. Single Go binary, two dependencies (`urfave/cli/v3` v3.9.0 and `gopkg.in/yaml.v3` v3.0.1). No policy schema, no observability.
+SSH bastion and reverse-tunnel manager. Single Go binary, two dependencies
+(`urfave/cli/v3` v3.9.0 and `gopkg.in/yaml.v3` v3.0.1). Certificate operations
+are delegated to [sshca](https://github.com/roselabs-io/sshca), which is a
+runtime dependency.
 
-## Read order
+Operator-side commands run on Linux, macOS and Windows. `endpoint install` and
+`endpoint setup` run on Linux and macOS.
 
-1. This file
-2. [README.md](README.md) — commands, usage, stability
-3. [CHANGELOG.md](CHANGELOG.md) — what shipped per release
-4. [main.go](main.go) + [main_test.go](main_test.go) — engineer-side + dispatch + Linux/Darwin install/setup
-5. [deploy/](deploy/) — the installer and the bastion-side sshd drop-ins
+## Scope
 
-## Project shape
+Out of scope, deliberately:
 
-**What this is:** a CLI and deploy scripts for an SSH bastion with reverse tunnels from endpoints that have no reachable address. Certificate operations are delegated to `sshca`. Operator-side commands run on Linux, macOS and Windows; `endpoint install` and `endpoint setup` run on Linux and macOS.
+- **Certificate mechanics.** `endpoint enroll` and `invite` shell out to
+  `sshca`. No CA private key is ever held here.
+- **Policy.** `endpoints.yaml` carries port, user, identity and description.
+  There is no concept of a customer, role or environment.
+- **Other transports.** SSH bastion and reverse tunnels only, not Tailscale,
+  WireGuard or DERP.
+- **Observability.** Beyond `status` and sshd's own connection logs.
 
-**What this isn't:**
+## Contract surface
 
-- A certificate authority. Every certificate operation is delegated to `sshca`.
-- A policy engine. No roles, no customers, no projects. Just tunnel endpoints.
-- A multi-transport connectivity tool. SSH bastion and reverse tunnels only.
+Three things callers depend on. Breaking any requires a major version bump.
 
-## Key principles
+**CLI grammar** — subcommand names, flag names, argument positions, exit codes.
+`bastionhub --help` is canonical.
 
-1. **Narrow scope.** SSH bastion and reverse tunnels only. Policy, fleet observability and audit beyond connection logs belong in a caller.
-2. **No in-process signing.** `sshca` is a runtime dependency; `endpoint enroll` and `invite` shell out to it.
-3. **Schema-neutral config.** `endpoints.yaml` carries port, user, identity and description. It has no concept of customer, role or principal vocabulary.
-4. **Stock OpenSSH.** No patched sshd. Configuration is drop-ins, plus `AuthorizedPrincipalsCommand` where per-principal scoping is required.
-5. **Persistence via the host init system.** systemd, launchd, or the Windows task scheduler, with autossh where it is available.
-
-## Contract surface (semver-disciplined)
-
-Two things downstream tools depend on. Breaking changes to either require a major version bump.
-
-**CLI grammar:** subcommand names, flag names, argument positions, exit codes. `bastionhub --help` is canonical.
-
-**`endpoints.yaml` schema** at `~/.config/bastionhub/endpoints.yaml` (or `$BASTIONHUB_CONFIG`):
+**`endpoints.yaml` schema** at `~/.config/bastionhub/endpoints.yaml`
+(`$BASTIONHUB_CONFIG`), mode 0600:
 
 ```yaml
 bastion_alias: <string>      # default "bastion"; ProxyJump target
-admin_alias:   <string>      # default "bastion-root"; for status/admin queries
+admin_alias:   <string>      # default "bastion-root"; used by status
 
 endpoints:
   <name>:
     port:        <int>       # required; 12001-12099 by convention
     user:        <string>    # required
-    identity:    <string>    # optional; path to SSH key for laptop→endpoint hop
+    identity:    <string>    # optional; SSH key for the hop to the endpoint
     description: <string>    # optional
 ```
 
-Unknown keys are tolerated (new fields may appear in minor releases). File mode is `0o600`.
+Unknown keys are tolerated; fields may be added in a minor release.
 
-**Deploy artifact identifiers** (external monitoring may key on these):
+**Deploy artifact identifiers**, which external monitoring may key on:
 
-- systemd unit: `bastionhub-tunnel.service`
-- launchd plist label: `com.roselabs.bastionhub-tunnel`
-- sshd drop-in filenames: `10-bastionhub.conf`, `30-passthrough-acl.conf`
+- systemd unit `bastionhub-tunnel.service`
+- launchd label `com.roselabs.bastionhub-tunnel`
+- sshd drop-ins `10-bastionhub.conf`, `30-passthrough-acl.conf`
 
-## Don't re-walk these
+`serve`'s far-end routes — `/j/<code>`, `/e/<code>/pubkey`, `/e/<code>/cert` —
+are also a contract, because a bootstrap script already running in the wild
+depends on them. The `/api/` routes move with the CLI.
 
-- **Don't use `Match Principal` in sshd_config.** Not valid OpenSSH syntax — `Match` only accepts `User`, `Group`, `Host`, `LocalAddress`, `LocalPort`, `RDomain`, `Address`. Use `Match User <role>` blocks; the cert's principal list matches the target Unix username by default.
-- **Don't add YAML frontmatter to Markdown docs.** Filename + path is enough.
-- **Don't add registry / policy concepts to `endpoints.yaml`.** No `customer`, no `role`. Those belong in the consumer that produces this file.
-- **Don't bring back `syscall.Exec` in `sshCmd`.** It's Unix-only and breaks Windows. The current `exec.Command + Run()` pattern with inherited stdio is the cross-platform-correct shape.
-- **`loadConfig` must re-init the `Endpoints` map post-Unmarshal.** YAML with `endpoints:` having only commented children unmarshals to a nil map; without re-init, the first register panics. Covered by `TestLoadConfig_NilMapRegression`.
+## Constraints worth knowing
 
-## File structure
-
-```
-bastionhub/
-├── README.md           # public face: install, Quick start, Stability promises
-├── CHANGELOG.md        # per-release
-├── CLAUDE.md           # this file
-├── LICENSE             # MIT
-├── main.go             # engineer-side commands + Linux/Darwin install/setup
-├── main_test.go        # unit + regression tests
-├── go.mod / go.sum
-├── .github/workflows/  # CI + release
-└── deploy/bastion/     # sshd drop-ins shipped to the bastion VPS
-    ├── 10-bastionhub.conf
-    ├── 30-passthrough-acl.conf
-    ├── principal-to-acl.sh
-    └── README.md
-```
+- **`Match Principal` is not valid `sshd_config` syntax.** `Match` accepts
+  `User`, `Group`, `Host`, `LocalAddress`, `LocalPort`, `RDomain` and `Address`
+  only. Role enforcement uses `Match User`, because OpenSSH requires a
+  certificate's principal to match the target username.
+- **Neither `PermitListen` nor `PermitOpen` accepts a port range.**
+  `12001-12099` is a syntax error. `PermitOpen` also matches the requested host
+  as a literal string, so `127.0.0.1:<port>` and `localhost:<port>` both need
+  listing. `deploy/install.sh` generates both lists.
+- **Don't reintroduce `syscall.Exec` in `sshCmd`.** It is Unix-only. The
+  `exec.Command` plus `Run()` pattern with inherited stdio is correct on
+  Windows and forwards signals properly.
+- **`loadConfig` must re-initialise the `Endpoints` map after unmarshalling.**
+  YAML with `endpoints:` and only commented children unmarshals to a nil map,
+  and the first register then panics. Covered by
+  `TestLoadConfig_NilMapRegression`.
+- **The session bootstrap script must not `exec ssh`.** `exec` replaces the
+  shell and discards the `EXIT` trap, leaving the private key on a machine that
+  was promised nothing would remain. Covered by
+  `TestSessionScriptDoesNotExecAwayItsCleanup`.
+- **`version` in `main.go` is a `var`, not a `const`**, so release builds can
+  inject the tag with `-ldflags "-X main.version=<tag>"`.
 
 ## Conventions
 
-- **Filenames:** kebab-case
-- **Dates:** ISO `YYYY-MM-DD`
-- **No YAML frontmatter** on Markdown docs
-- **Version variable** in `main.go` is `var` not `const` so release builds inject the tag via `-ldflags "-X main.version=<tag>"`
-
-## See also
-
-- [sshca](https://github.com/roselabs-io/sshca) — cert tool bastionhub depends on. `endpoint enroll` shells out to `sshca cert sign`.
-- Internal design notes, roadmap, current operational state, and inherited design rationale live in a private workspace (not public).
+- Filenames: kebab-case.
+- Dates: ISO `YYYY-MM-DD`.
+- No YAML frontmatter in Markdown.
