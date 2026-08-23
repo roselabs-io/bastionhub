@@ -47,11 +47,19 @@ Download from [GitHub Releases](https://github.com/roselabs-io/bastionhub/releas
 
 ## Platform support
 
-| | Engineer-side (`list` / `status` / `ssh` / `endpoint register/enroll/unregister`) | Endpoint-side (`endpoint install` / `setup`) |
-|---|---|---|
-| Linux | ✓ | ✓ (systemd + apt/dnf/yum/apk) |
-| macOS | ✓ | ✓ (launchd + Homebrew, per-user, no sudo) |
-| Windows | ✓ | ✗ (out of scope — Windows boxes are typically reached *behind* an endpoint, not as one) |
+| | Engineer-side (`list` / `status` / `ssh` / `invite` / `endpoint register/enroll/unregister`) | Endpoint-side (`endpoint install` / `setup`) | Far end via `invite` |
+|---|---|---|---|
+| Linux | ✓ | ✓ (systemd + apt/dnf/yum/apk) | ✓ (systemd) |
+| macOS | ✓ | ✓ (launchd + Homebrew, per-user, no sudo) | ✓ (launchd) |
+| Windows | ✓ | ✗ (needs autossh + a service wrapper) | ✓ (scheduled task) |
+
+The last column is the enrollment path added in v0.2. It needs nothing installed
+on the far end — no bastionhub, no autossh, no admin rights — because the
+bootstrap script uses only `ssh`, `ssh-keygen` and `curl` (or PowerShell's
+`iwr`), all of which ship with Windows 10/11, macOS and Linux. Persistence comes
+from systemd `Restart=always` / launchd `KeepAlive` / a scheduled task around
+plain `ssh`, with `ServerAliveInterval` doing the dead-peer detection autossh
+would otherwise provide.
 
 ## Quick start
 
@@ -83,6 +91,79 @@ bastionhub ssh my-endpoint -- uptime  # one-off remote command
 
 The config lives at `~/.config/bastionhub/endpoints.yaml` (override with `$BASTIONHUB_CONFIG`).
 
+## Enrolling a machine you don't control
+
+`bastionhub endpoint install/setup` works when you can get a shell on the device.
+When you can't — a controller on a customer's floor, with a technician on the
+phone — the problem is delivering a certificate to a machine nobody provisioned.
+Doing that by hand means generating a keypair *for* someone else and sending
+them a **private key**, which is not something to do over chat.
+
+`bastionhub serve` closes that gap. It runs on the bastion, mints single-use
+invite codes, and relays public material between the far end and you:
+
+```sh
+# On the bastion (once):
+bastionhub serve --bastion bastion.example.io --listen 127.0.0.1:8420
+# → prints an admin token on first run. Put it on your laptop.
+
+# On your laptop, where the CA lives:
+export BASTIONHUB_SERVE_URL=https://bastion.example.io
+export BASTIONHUB_ADMIN_TOKEN=<token>
+
+bastionhub invite tex-mmv2
+```
+
+```
+Read this to whoever is on site (expires in 30 min):
+
+    curl -sSL https://bastion.example.io/j/3DY2FNYT | sh      # mac / linux
+    iwr -useb https://bastion.example.io/j/3DY2FNYT | iex     # windows
+
+Code: 3DY2-FNYT
+
+waiting for the far end… ✓ public key received
+
+  fingerprint: 256 SHA256:LIvVkKqGGYj2Jo8uhwo4IXHOlnc+7MGfZL8pRi+mwoQ (ED25519)
+  will sign as: principal=gw-tunnel valid=+52w port=12005
+
+Ask them to read their fingerprint back. Sign it? [y/N] y
+✓ certificate signed and sent
+
+✓ tex-mmv2 enrolled on port 12005
+```
+
+The far end generates its own keypair and sends only the public half. Ask them
+to read the fingerprint back before you answer that prompt — it is the only
+thing tying the key you are about to sign to the person you are talking to.
+
+### The service never holds the CA
+
+This is the design constraint, not an implementation detail. `serve` is a
+rendezvous point: it stores public keys and certificates and hands them between
+two parties who cannot otherwise reach each other. Signing happens on your
+laptop, where the CA is, exactly as `endpoint enroll` already does.
+
+If the bastion were fully compromised, the attacker would get a list of public
+keys and some expired codes. They could not mint a single certificate.
+
+The cost of that property: **you have to be online when an invite is redeemed.**
+That is a direct consequence of the CA not being on the VPS, and it is the
+intended trade.
+
+### Two shapes
+
+| `--shape` | For | Persistence | Default validity |
+|---|---|---|---|
+| `device` | A machine that stays — controller, gateway box | systemd / launchd / scheduled task; survives reboots | `+52w` |
+| `session` | A laptop, one sitting | none — closing the window removes the key | `+12h` |
+
+### Serving it
+
+`serve` binds `127.0.0.1:8420` by default and expects a TLS-terminating proxy in
+front, since the invite line tells a stranger to pipe a URL into a shell. Pass
+`--tls-cert`/`--tls-key` to serve HTTPS directly instead.
+
 ## Stability promises
 
 Pre-1.0: minor releases may break things. Breaking changes will be called out in [CHANGELOG.md](CHANGELOG.md) with the rationale.
@@ -92,10 +173,12 @@ Post-1.0: [SemVer](https://semver.org/). Three surfaces are versioned:
 - **CLI grammar** — subcommand names, flag names, exit codes
 - **`endpoints.yaml` schema** — fields documented in [CLAUDE.md](CLAUDE.md) "Contract surface"
 - **Deploy artifact identifiers** — `bastionhub-tunnel.service` (systemd unit), `com.roselabs.bastionhub-tunnel` (launchd label), `10-bastionhub.conf` / `30-passthrough-acl.conf` (sshd drop-ins)
+- **`serve` HTTP surface** — the far-end routes (`/j/<code>`, `/e/<code>/pubkey`, `/e/<code>/cert`) are the contract a bootstrap script in the wild depends on. The `/api/` routes are operator-facing and move with the CLI.
 
 ## Roadmap
 
-- **v0.2** — `roselabs-io/homebrew-tools` tap; tagged release pipeline polish.
+- **v0.2** — `bastionhub serve` + `bastionhub invite` (above). Homebrew tap live.
+- **Next** — a self-host install script: fresh VPS to working bastion in one command, including `serve`, the sshd drop-ins, the role users, and TLS.
 - **Soon** — `bastionhub bastion verify` (sanity-check a bastion VPS's sshd drop-ins, role users, KRL).
 - **Later** — registry-driven Pattern B (the current `principal-to-acl.sh` emits a fixed list; future versions read a config file). OpenWrt endpoint support.
 

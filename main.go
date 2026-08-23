@@ -25,7 +25,9 @@ import (
 
 // version is the bastionhub tool version. Defaults to "0.1.0-dev"
 // during local development; release builds override via:
-//   go build -ldflags "-X main.version=<tag>"
+//
+//	go build -ldflags "-X main.version=<tag>"
+//
 // See .github/workflows/release.yml.
 var version = "0.1.0-dev"
 
@@ -880,6 +882,46 @@ func main() {
 				Name:   "init",
 				Usage:  "create a starter endpoints.yaml at ~/.config/bastionhub/",
 				Action: initCmd,
+			},
+			{
+				Name:      "invite",
+				Usage:     "[engineer-side] mint a single-use enrollment code, then sign the key it brings back",
+				ArgsUsage: "<name>",
+				Description: "Mints an invite on a `bastionhub serve` instance and prints a one-line command\n" +
+					"to read to whoever is at the far end. Waits for their public key, signs it\n" +
+					"locally via sshca, and sends the certificate back. The CA never leaves this\n" +
+					"machine and the service never sees a private key.",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "url", Usage: "public URL of `bastionhub serve` (or $BASTIONHUB_SERVE_URL)"},
+					&cli.StringFlag{Name: "admin-token", Usage: "admin token from `bastionhub serve` (or $BASTIONHUB_ADMIN_TOKEN)"},
+					&cli.StringFlag{Name: "shape", Usage: "'device' (stays, survives reboots) or 'session' (one sitting, leaves nothing)", Value: "device"},
+					&cli.IntFlag{Name: "port", Usage: "bastion-side listen port (default: next free in 12001-12099)"},
+					&cli.StringFlag{Name: "principal", Usage: "cert principal (default 'gw-tunnel')"},
+					&cli.StringFlag{Name: "valid", Usage: "cert validity (default '+52w' for device, '+12h' for session)"},
+					&cli.DurationFlag{Name: "ttl", Usage: "how long the invite code is redeemable", Value: 30 * time.Minute},
+					&cli.StringFlag{Name: "user", Usage: "the user to SSH as on the endpoint", Value: "root"},
+					&cli.StringFlag{Name: "identity", Usage: "path to SSH key to use for auth to this endpoint"},
+					&cli.StringFlag{Name: "description", Aliases: []string{"d"}, Usage: "free-form description"},
+					&cli.StringFlag{Name: "ca-dir", Usage: "passed through to `sshca cert sign --dir`"},
+					&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "skip the fingerprint confirmation prompt"},
+				},
+				Action: inviteCmd,
+			},
+			{
+				Name:  "serve",
+				Usage: "[bastion-side] run the invite/relay service",
+				Description: "Runs on the bastion VPS. Mints invite codes, serves the bootstrap script,\n" +
+					"and relays a public key to the operator and a certificate back. It holds no\n" +
+					"CA and signs nothing: a full compromise of this host yields public keys and\n" +
+					"expired codes.",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "bastion", Usage: "public hostname far-end devices dial for SSH (e.g. bastion.example.io)", Required: true},
+					&cli.StringFlag{Name: "listen", Usage: "address to listen on", Value: "127.0.0.1:8420"},
+					&cli.StringFlag{Name: "base-url", Usage: "public base URL of this service (default: https://<bastion>)"},
+					&cli.StringFlag{Name: "tls-cert", Usage: "TLS certificate file (serve HTTPS directly instead of behind a proxy)"},
+					&cli.StringFlag{Name: "tls-key", Usage: "TLS key file"},
+				},
+				Action: serveCmd,
 			},
 			{
 				Name:  "endpoint",
