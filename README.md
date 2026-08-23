@@ -33,6 +33,7 @@ The registry of endpoints is a local YAML file at
 
 ```sh
 brew tap roselabs-io/tools
+brew trust roselabs-io/tools   # recent Homebrew refuses third-party taps otherwise
 brew install bastionhub
 brew install sshca       # required runtime dependency
 ```
