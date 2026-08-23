@@ -235,13 +235,6 @@ Post-1.0: [SemVer](https://semver.org/). Three surfaces are versioned:
 - **Deploy artifact identifiers** — `bastionhub-tunnel.service` (systemd unit), `com.roselabs.bastionhub-tunnel` (launchd label), `10-bastionhub.conf` / `30-passthrough-acl.conf` (sshd drop-ins)
 - **`serve` HTTP surface** — the far-end routes (`/j/<code>`, `/e/<code>/pubkey`, `/e/<code>/cert`) are the contract a bootstrap script in the wild depends on. The `/api/` routes are operator-facing and move with the CLI.
 
-## Roadmap
-
-- `bastionhub bastion verify` — check a bastion's sshd drop-ins, role users and KRL against what the tool expects.
-- Configurable `principal-to-acl.sh`. It currently emits a fixed list; a future version reads a mapping file.
-- OpenWrt endpoint support.
-- Testing the Windows bootstrap path.
-
 ## See also
 
 - [sshca](https://github.com/roselabs-io/sshca) — cert tool bastionhub depends on
