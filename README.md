@@ -1,24 +1,31 @@
 # bastionhub
 
-Self-hosted SSH bastion + reverse-tunnel substrate. Pairs with [sshca](https://github.com/roselabs-io/sshca) for cert auth.
+An SSH bastion and reverse-tunnel manager. Single Go binary, two dependencies
+(`urfave/cli/v3` and `yaml.v3`). Linux, macOS and Windows. Uses
+[sshca](https://github.com/roselabs-io/sshca) for certificate operations.
 
-**v0.1.0** — initial release. Single Go binary, two deps (`urfave/cli/v3` + `yaml.v3`). Linux + macOS + Windows.
+## Overview
 
-## What it does
+A machine without a reachable address opens an outbound SSH connection to a
+bastion and holds it open, binding a port there. Connecting to that port reaches
+the machine. `bastionhub` configures both ends of that arrangement: the
+bastion's sshd, the endpoint's persistent tunnel, and the certificates that
+authenticate them.
 
-`bastionhub` packages the "self-host a central SSH bastion + a small fleet of devices that hold persistent reverse tunnels back to it" recipe as a single tool, with sane defaults and cert-auth integration. Three audiences:
+It wraps OpenSSH. Signing is delegated to `sshca`; persistence uses systemd,
+launchd or the Windows task scheduler; the bastion side is sshd configuration.
 
-- **Solo devs** who want to reach home-lab boxes from anywhere without a VPN.
-- **Small teams** that want self-hosted "reach our boxes through NAT" without committing to Tailscale.
-- **Sovereignty-conscious shops** that won't put a managed-control-plane daemon on prod gear.
+The registry of endpoints is a local YAML file at
+`~/.config/bastionhub/endpoints.yaml` (`$BASTIONHUB_CONFIG`).
 
 ## Scope
 
-Substrate only. Three things bastionhub explicitly does NOT do:
-
-- **No CA / cert mechanics.** Shells out to [sshca](https://github.com/roselabs-io/sshca) for signing host and tunnel certs. Bastionhub never holds CA private keys.
-- **No multi-tenant policy / registry schema.** No concept of "customer" or "role" — just tunnel endpoints. Upstream tools (e.g. an OT-integrator product layer) compile their richer registries down to bastionhub's local config.
-- **No other substrates.** No Tailscale, WireGuard, or DERP. SSH-bastion + reverse-tunnel only.
+- **No certificate mechanics.** `bastionhub` calls `sshca` and never holds CA
+  private keys.
+- **No policy schema.** Endpoints have a name, a port, a user and an optional
+  identity file. There is no concept of a customer, role or environment.
+- **No other transports.** SSH bastion and reverse tunnels only. Not
+  Tailscale, WireGuard or DERP.
 
 ## Install
 
@@ -64,14 +71,14 @@ The PowerShell path has not been tested on Windows.
 ## Quick start
 
 ```sh
-# 0. (one-time) Stand up the bastion VPS. See deploy/bastion/README.md.
+# 0. Configure the bastion. See "Installing a bastion" below.
 
 # 1. Create the local endpoints registry
 bastionhub init
 
-# 2. Enroll an endpoint — one shot: signs the tunnel cert (via sshca) + registers
+# 2. Enroll an endpoint: signs a tunnel certificate via sshca and registers it.
 bastionhub endpoint enroll my-endpoint --pubkey-file ./my-endpoint.pub
-# → outputs the assigned port + ships you a cert file to deliver to the endpoint
+# Prints the assigned port and the path of the certificate to deliver.
 
 # 3. On the endpoint device, once the cert is in place:
 #    Linux (needs sudo, systemd + apt/dnf/yum/apk):
@@ -80,16 +87,14 @@ sudo bastionhub endpoint setup --port 12001 --bastion bastion.example.com
 #    macOS (per-user, no sudo, launchd + brew):
 bastionhub endpoint install
 bastionhub endpoint setup --port 12001 --bastion bastion.example.com
-#    Both support --dry-run on setup for inspection without writing/loading.
+#    setup accepts --dry-run to print the unit or plist without installing it.
 
-# 4. Daily use — from the engineer laptop:
+# 4. From the operator machine:
 bastionhub list                       # show configured endpoints
 bastionhub status                     # query bastion for live tunnels
-bastionhub ssh my-endpoint            # ProxyJump via bastion
-bastionhub ssh my-endpoint -- uptime  # one-off remote command
+bastionhub ssh my-endpoint            # ProxyJump through the bastion
+bastionhub ssh my-endpoint -- uptime  # run a single command
 ```
-
-The config lives at `~/.config/bastionhub/endpoints.yaml` (override with `$BASTIONHUB_CONFIG`).
 
 ## Installing a bastion
 
@@ -232,15 +237,15 @@ Post-1.0: [SemVer](https://semver.org/). Three surfaces are versioned:
 
 ## Roadmap
 
-- **v0.2** — `bastionhub serve` + `bastionhub invite` (above). Homebrew tap live.
-- **Next** — a self-host install script: fresh VPS to working bastion in one command, including `serve`, the sshd drop-ins, the role users, and TLS.
-- **Soon** — `bastionhub bastion verify` (sanity-check a bastion VPS's sshd drop-ins, role users, KRL).
-- **Later** — registry-driven Pattern B (the current `principal-to-acl.sh` emits a fixed list; future versions read a config file). OpenWrt endpoint support.
+- `bastionhub bastion verify` — check a bastion's sshd drop-ins, role users and KRL against what the tool expects.
+- Configurable `principal-to-acl.sh`. It currently emits a fixed list; a future version reads a mapping file.
+- OpenWrt endpoint support.
+- Testing the Windows bootstrap path.
 
 ## See also
 
 - [sshca](https://github.com/roselabs-io/sshca) — cert tool bastionhub depends on
-- [deploy/bastion/](deploy/bastion/) — sshd drop-ins + Pattern B `AuthorizedPrincipalsCommand` script for the bastion VPS
+- [deploy/bastion/](deploy/bastion/) — sshd drop-ins and the optional `AuthorizedPrincipalsCommand` script
 
 ## License
 

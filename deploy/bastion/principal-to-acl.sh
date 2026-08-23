@@ -11,7 +11,7 @@
 #   $2 = %i — certificate key_id (audit string)
 #
 # Current status: SKELETON — emits a small fixed set of principals for testing
-# the Pattern B mechanism end-to-end. Each entry maps a principal to a
+# this mechanism end-to-end. Each entry maps a principal to a
 # specific permitopen restriction. A real V1+ implementation would read
 # a registry (per-edge metadata) and emit one line per principal the
 # bound identity is allowed to assert.

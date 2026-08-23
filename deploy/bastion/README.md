@@ -1,31 +1,36 @@
 # Bastion deploy artifacts
 
-Files in this directory are shipped to the bastion VPS during setup. They live in-repo so the deploy steps are reproducible from `git clone`.
+Files installed on the bastion. [`../install.sh`](../install.sh) deploys the
+first of them automatically; this page documents the manual procedure and the
+optional per-principal scoping, which the installer does not configure.
 
 ## What's here
 
 | File | Deploy target | Purpose |
 |---|---|---|
-| [`10-bastionhub.conf`](10-bastionhub.conf) | `/etc/ssh/sshd_config.d/10-bastionhub.conf` (root:root, 644) | **Foundational**: CA trust + `Match User gw-tunnel` + `Match User gw-user` blocks |
-| [`principal-to-acl.sh`](principal-to-acl.sh) | `/usr/local/bin/principal-to-acl` (root:root, 755) | **Optional Pattern B**: `AuthorizedPrincipalsCommand` script — emits per-principal ACL lines |
-| [`30-passthrough-acl.conf`](30-passthrough-acl.conf) | `/etc/ssh/sshd_config.d/30-passthrough-acl.conf` (root:root, 644) | **Optional Pattern B**: sshd drop-in wiring the script into a `Match User gw-passthrough` block |
+| [`10-bastionhub.conf`](10-bastionhub.conf) | `/etc/ssh/sshd_config.d/10-bastionhub.conf` (root:root, 644) | CA trust, host-wide settings, and the `gw-tunnel` and `gw-user` Match blocks |
+| [`principal-to-acl.sh`](principal-to-acl.sh) | `/usr/local/bin/principal-to-acl` (root:root, 755) | Optional. `AuthorizedPrincipalsCommand` script emitting per-principal `permitopen` lines |
+| [`30-passthrough-acl.conf`](30-passthrough-acl.conf) | `/etc/ssh/sshd_config.d/30-passthrough-acl.conf` (root:root, 644) | Optional. Wires that script into a `Match User gw-passthrough` block |
 
-The 10-bastionhub.conf shipped here is the minimum-viable bastion for the bastionhub V0 substrate. Pattern B (30-passthrough-acl.conf + principal-to-acl.sh) is layered on top when you need per-principal `permitopen` scoping for the `gw-passthrough` role.
+`10-bastionhub.conf` is sufficient on its own. The other two are needed only
+for per-principal `permitopen` scoping, where a distinct principal is issued per
+downstream device rather than granting the whole tunnel port range.
 
 ## Prerequisites
 
-- A Linux VPS running OpenSSH (any reasonably recent distro)
-- Root SSH access to the bastion as `bastion-root` (your own raw-key initial bootstrap)
-- [`sshca`](https://github.com/roselabs-io/sshca) installed on the engineer laptop with a CA initialized (`sshca ca init`)
+- A Linux host running OpenSSH 8.2 or later
+- Root SSH access to it, aliased below as `bastion-root`
+- [`sshca`](https://github.com/roselabs-io/sshca) on the operator machine, with a CA created (`sshca ca init`)
 
 ## Deploy
 
-### Step 1 — Foundational config (10-bastionhub.conf)
+### Step 1 — sshd configuration
 
-This brings the bastion up as a cert-auth-only SSH bastion with two role blocks (`gw-tunnel` for endpoint dial-in, `gw-user` for ProxyJump).
+Configures certificate authentication and the two role blocks: `gw-tunnel` for
+endpoints opening reverse tunnels, `gw-user` for ProxyJump.
 
 ```bash
-# 0. (One-time) Generate CAs on engineer laptop if not already done
+# 0. Create the CAs on the operator machine, if not already done
 sshca ca init --dir ./ca
 
 # 1. Ship the user CA pubkey (trust root)
@@ -45,15 +50,16 @@ scp deploy/bastion/10-bastionhub.conf bastion-root:/etc/ssh/sshd_config.d/10-bas
 ssh bastion-root 'sshd -t && systemctl reload ssh && echo reloaded'
 ```
 
-### Step 2 (optional) — Pattern B for per-principal scoping (gw-passthrough)
+### Step 2 (optional) — per-principal scoping
 
-Only needed if you'll scope tunnel-through forwarding *per principal* (e.g. one principal per downstream edge device). For the gw-tunnel + gw-user roles, Step 1 alone is enough.
+Needed only to scope forwarding per principal, for example one principal per
+downstream device. Step 1 alone covers the `gw-tunnel` and `gw-user` roles.
 
 ```bash
 # 1. Create the gw-passthrough Unix user (no shell)
 ssh bastion-root 'useradd -m -s /usr/sbin/nologin gw-passthrough || true'
 
-# 2. Ship the script with the right perms (sshd refuses to execute otherwise)
+# 2. Install the script. sshd refuses to run it unless it is root-owned and 755.
 scp deploy/bastion/principal-to-acl.sh bastion-root:/usr/local/bin/principal-to-acl
 ssh bastion-root 'chown root:root /usr/local/bin/principal-to-acl && chmod 755 /usr/local/bin/principal-to-acl'
 
@@ -65,21 +71,22 @@ ssh bastion-root 'sshd -t && systemctl reload ssh && echo reloaded'
 ### Step 3 — Sign your first user cert + verify
 
 ```bash
-# Sign a test gw-user cert for the engineer laptop
+# Sign a gw-user certificate for the operator machine
 sshca cert sign --ca user --principal gw-user \
     --valid +8h --key-id "engineer-bastion-$(date -u +%Y%m%dT%H%MZ)" \
     --dir ./ca ~/.ssh/id_ed25519.pub
 
 # Try a ProxyJump (the *-cert.pub is auto-loaded next to the private key)
 ssh -J gw-user@<bastion-host> nobody@nothing 2>&1 | head -1
-# Should NOT say "Permission denied (publickey)" — cert auth should succeed
-# at the bastion. The downstream connection failing is expected (no endpoint).
+# "Permission denied (publickey)" means certificate authentication failed.
+# Any other error means it succeeded; the downstream connection is expected
+# to fail, as no endpoint is enrolled.
 ```
 
-### Verify Pattern B (optional)
+### Verify per-principal scoping (optional)
 
 ```bash
-# Sign a test cert with one of the demo principals in principal-to-acl.sh
+# Sign a certificate with one of the principals listed in principal-to-acl.sh
 sshca cert sign --ca user --principal gw-edge-ssh-test-loopback \
     --valid +1h --key-id 'test-passthrough-pattern' \
     --dir ./ca /path/to/test-key.pub
@@ -92,7 +99,10 @@ ssh -J bastion-root@<bastion-host> gw-passthrough@<bastion-host> \
 
 ## See also
 
-- Upstream ADR-001 — `Match Principal` is not valid OpenSSH syntax; we use `Match User <role>` instead
-- Upstream ADR-004 — Principal taxonomy + why default principals grant no shell
-- Upstream ADR-008 — Why per-principal scoping needs `AuthorizedPrincipalsCommand` (Pattern B)
-- [github.com/roselabs-io/sshca](https://github.com/roselabs-io/sshca) — Cert tool used throughout these procedures
+- [`../install.sh`](../install.sh) — automates Step 1
+- [github.com/roselabs-io/sshca](https://github.com/roselabs-io/sshca) — the certificate tool used above
+
+`Match Principal` is not valid `sshd_config` syntax. `Match` accepts `User`,
+`Group`, `Host`, `LocalAddress`, `LocalPort`, `RDomain` and `Address` only,
+which is why role enforcement uses `Match User`: OpenSSH requires a
+certificate's principal to match the target username.

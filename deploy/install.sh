@@ -1,26 +1,25 @@
 #!/bin/bash
-# bastionhub — fresh VPS to working bastion.
+# bastionhub — bastion installation for Debian and Ubuntu.
 #
 #   curl -sSL https://raw.githubusercontent.com/roselabs-io/bastionhub/v0.2.0/deploy/install.sh \
 #       | sudo bash -s -- --domain bastion.example.io
 #
-# Pinned to a tag on purpose: an installer people pipe into a root shell should
-# not change under them because someone pushed to main.
+# The URL is pinned to a release tag, so the file does not change between runs.
 #
-# What you get:
-#   - the three restricted role users (gw-tunnel, gw-user, gw-passthrough)
-#   - sshd configured for certificate auth, with each role scoped to what it needs
+# Installs:
+#   - the gw-tunnel, gw-user and gw-passthrough accounts
+#   - an sshd drop-in configuring certificate authentication, with each
+#     account scoped to the forwarding it requires
 #   - the bastionhub binary
-#   - `bastionhub serve` under systemd, behind Caddy with automatic HTTPS
-#   - an admin token to put on the operator's laptop
+#   - bastionhub serve as a systemd unit, behind Caddy for TLS
+#   - ufw rules for 22, 80, 443 and the service port
 #
-# What it never touches: the CA. The certificate authority stays on the
-# operator's machine and nothing here can sign. This host relays public keys
-# and certificates between parties who cannot otherwise reach each other. If
-# this box is fully compromised, the attacker gets public keys and expired
-# invite codes, and cannot mint a single certificate.
+# Prints an admin token on completion.
 #
-# Re-running is safe. Every step checks before it acts.
+# It does not install a certificate authority. The CA remains on the operator's
+# machine; this host stores and relays public keys and certificates only.
+#
+# The script is idempotent: every step checks before it acts.
 
 set -euo pipefail
 
@@ -44,17 +43,16 @@ usage() {
     cat <<USAGE
 usage: install.sh --domain <host> [options]
 
-  --domain <host>      Public hostname for this bastion. Required: it is both
-                       what devices dial for SSH and what TLS is issued for.
-  --user-ca <path|->   The operator's user CA public key. Without it, sshd
-                       trusts nothing and no one can log in with a cert. May
-                       be a path, or "-" to read from stdin. If omitted, the
-                       script sets everything else up and tells you how to
-                       finish.
+  --domain <host>      Required. Hostname endpoints dial for SSH, and the name
+                       TLS is issued for. A bare IP is rejected unless
+                       --skip-tls is given.
+  --user-ca <path|->   The user CA public key to trust. "-" reads stdin. If
+                       omitted, sshd trusts no CA and the script prints how to
+                       install one afterwards.
   --acme-email <addr>  Contact address for Let's Encrypt.
-  --skip-tls           Do not install or configure Caddy. Use when something
-                       else already terminates TLS on this host.
-  --skip-sshd          Do not touch sshd configuration.
+  --skip-tls           Do not install or configure Caddy. Required if another
+                       service holds :80 or :443.
+  --skip-sshd          Do not modify sshd configuration.
   --version <tag>      bastionhub release to install (default: latest).
   --binary <path>      Install this binary instead of downloading a release.
                        For air-gapped hosts, and for testing an unreleased
@@ -82,10 +80,9 @@ done
 [ -n "$DOMAIN" ] || die "--domain is required (try --help)"
 
 # A bare IP works for SSH but not for the invite link: no CA issues
-# certificates for IP addresses, so https://<ip>/j/<code> has no valid cert.
-# Telling a technician to pass -k defeats the point — that URL is piped into a
-# shell, and TLS is the only thing stopping someone on the path choosing what
-# runs on their machine.
+# certificates for IP addresses, so https://<ip>/j/<code> presents no valid
+# certificate. The bootstrap URL is piped into a shell on the far end, so TLS
+# verification is required rather than optional.
 if printf '%s' "$DOMAIN" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
     if [ "$SKIP_TLS" = "0" ]; then
         cat >&2 <<MSG
@@ -127,10 +124,10 @@ note "Installing bastionhub on $DOMAIN ($ARCH)"
 
 # --- role users --------------------------------------------------------------
 #
-# Three accounts, each able to do exactly one thing. The split is the security
-# model: a device holds gw-tunnel and may listen but gets no shell; an operator
-# holds gw-user and may forward but may not listen. Neither can do the other's
-# job. They authenticate by certificate only — authorized_keys stays empty.
+# Three accounts. A certificate's principal must match the target username, so
+# these names are what the Match blocks below key on: gw-tunnel may listen and
+# not forward, gw-user may forward and not listen. authorized_keys is left
+# empty; authentication is by certificate.
 
 note "Role users"
 for u in gw-tunnel gw-user gw-passthrough; do
@@ -199,8 +196,8 @@ else
             cp "$USER_CA" /etc/ssh/user_ca.pub
         fi
         chmod 644 /etc/ssh/user_ca.pub
-        # A private key here would be a catastrophe, and it is an easy slip:
-        # the file is one tab-completion away from the public one.
+        # user_ca and user_ca.pub differ by one tab-completion. Reject the
+        # private key rather than install it as a trust root.
         if grep -q "PRIVATE KEY" /etc/ssh/user_ca.pub; then
             rm -f /etc/ssh/user_ca.pub
             die "that is a PRIVATE key. The CA private key must never leave the operator's machine. Pass the .pub."
@@ -216,10 +213,10 @@ else
 
     [ -f /etc/ssh/revoked_keys.krl ] || : > /etc/ssh/revoked_keys.krl
 
-    # PermitListen and PermitOpen both reject port ranges — "12001-12099" is a
-    # syntax error, not a range — and PermitOpen matches the requested host as
-    # a literal string. Hence the enumeration, generated here rather than
-    # written out, because 200 hand-maintained entries rot.
+    # Neither PermitListen nor PermitOpen accepts a port range: "12001-12099"
+    # is a syntax error. PermitOpen also matches the requested host as a
+    # literal string, so both spellings are needed. Generated rather than
+    # written out to keep the two lists in sync with PORT_LO/PORT_HI.
     LISTEN_PORTS=""; OPEN_PORTS=""
     for p in $(seq $PORT_LO $PORT_HI); do
         LISTEN_PORTS="$LISTEN_PORTS $p"
@@ -236,9 +233,10 @@ else
 # cannot forward. An operator holds gw-user and may forward to a tunnel port;
 # they get no shell and cannot listen. Neither can do the other's job.
 #
-# OpenSSH maps a certificate's principal to the target username, which is why
-# these are "Match User" and not "Match Principal" — the latter is not valid
-# syntax, a fact that costs everyone an afternoon exactly once.
+# OpenSSH maps a certificate's principal to the target username. These are
+# "Match User" blocks because "Match Principal" is not valid sshd_config
+# syntax; Match accepts User, Group, Host, LocalAddress, LocalPort, RDomain
+# and Address only.
 
 PasswordAuthentication no
 KbdInteractiveAuthentication no
@@ -293,8 +291,8 @@ CONF
     fi
     ok "config valid"
 
-    # Editing sshd remotely is the classic way to lock yourself out of a box
-    # with no console. Restore automatically unless this script gets to the end.
+    # Revert automatically if this script does not reach the end, so a failure
+    # part-way through cannot leave a host unreachable.
     RESTORE=/run/bastionhub-sshd-restore
     mkdir -p "$RESTORE"
     cp /etc/ssh/sshd_config.d/10-bastionhub.conf "$RESTORE/" 2>/dev/null || true
@@ -348,8 +346,7 @@ if ! curl -fsSL "$BASE/$TARBALL" -o "$TMP/$TARBALL"; then
     die "download failed: $BASE/$TARBALL"
 fi
 
-# Every release ships checksums.txt. Skipping the check would mean a script
-# people run as root taking a binary on faith.
+# Every release ships checksums.txt.
 if curl -fsSL "$BASE/checksums.txt" -o "$TMP/checksums.txt" 2>/dev/null; then
     WANT=$(awk -v f="$TARBALL" '$2 == f || $2 == "*"f {print $1}' "$TMP/checksums.txt" | head -1)
     if [ -n "$WANT" ]; then
@@ -384,9 +381,8 @@ ok "installed $(/usr/local/bin/bastionhub --version)"
 
 # --- serve -------------------------------------------------------------------
 #
-# Runs on the host rather than in a container: it is deliberately close to
-# nothing, and a container would be one more thing to keep current on the most
-# exposed machine in the system.
+# Runs as a host process rather than a container, to avoid adding a container
+# runtime as a dependency of the bastion.
 
 note "invite service"
 BIND_ADDR="127.0.0.1"
@@ -414,7 +410,7 @@ StateDirectoryMode=0700
 Environment=BASTIONHUB_SERVE_STATE=/var/lib/bastionhub/invites.json
 Environment=BASTIONHUB_ADMIN_TOKEN_FILE=/var/lib/bastionhub/admin-token
 
-# This process holds no CA and signs nothing. Give it correspondingly little.
+# The service reads and writes only its own state directory.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
@@ -440,8 +436,8 @@ ok "serve listening on $BIND_ADDR:$SERVE_PORT"
 
 # --- TLS ---------------------------------------------------------------------
 #
-# The invite line tells a stranger to pipe a URL into their shell. Without TLS,
-# anyone on the path chooses what they run. This is not optional in practice.
+# The bootstrap URL is piped into a shell on the far end, so TLS verification
+# is required.
 
 if [ "$SKIP_TLS" = "1" ]; then
     note "TLS: skipped (--skip-tls). Point your proxy at $BIND_ADDR:$SERVE_PORT."
@@ -486,8 +482,8 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "^Status: 
     for rule in "22/tcp" "80/tcp" "443/tcp"; do
         ufw status | grep -q "^$rule" || { ufw allow "$rule" >/dev/null; ok "allowed $rule"; }
     done
-    # Containerised proxies reach the host over the bridge, and ufw's policy is
-    # DROP. Without this the proxy times out and every invite 502s.
+    # A containerised proxy reaches the host over the docker bridge, and ufw's
+    # default policy is DROP.
     if [ "$BIND_ADDR" != "127.0.0.1" ]; then
         ufw status | grep -q "$SERVE_PORT" || {
             ufw allow from 172.16.0.0/12 to any port "$SERVE_PORT" proto tcp >/dev/null
@@ -506,27 +502,29 @@ TOKEN=$(cat /var/lib/bastionhub/admin-token 2>/dev/null || echo "<unavailable>")
 
 cat <<DONE
 
-$(printf '\033[32m✓\033[0m') bastion ready at https://$DOMAIN
+$(printf '\033[32m✓\033[0m') Installed. Service reachable at https://$DOMAIN
 
-On the operator's laptop — the machine that holds the CA:
+Set these on the machine holding the CA:
 
     export BASTIONHUB_SERVE_URL=https://$DOMAIN
     export BASTIONHUB_ADMIN_TOKEN=$TOKEN
 
-Then invite a machine. Two directions:
+Enrollment:
 
-    bastionhub invite tex-controller --shape device
-        a machine that must be REACHABLE, and stays
+    bastionhub invite <name> --shape device
+        A machine to be reached. Installs a persistent tunnel.
 
-    bastionhub invite my-work-laptop --shape access --valid +52w
-        a machine that needs to REACH the fleet. Issue this once; every
-        device you enrol later is reachable from it with no re-issue.
+    bastionhub invite <name> --shape access --valid +52w
+        A machine that reaches others. Issues a gw-user certificate, which
+        is not scoped to a specific endpoint and covers endpoints enrolled
+        later.
 
 DONE
 
 if [ ! -s /etc/ssh/user_ca.pub ]; then
     cat <<PENDING
-$(printf '\033[33m!\033[0m') No CA is trusted yet, so nobody can authenticate. From the operator's machine:
+$(printf '\033[33m!\033[0m') No CA public key is installed, so no certificate will authenticate.
+  From the machine holding the CA:
 
     scp ca/user_ca.pub root@$DOMAIN:/etc/ssh/user_ca.pub
     ssh root@$DOMAIN 'sshd -t && systemctl reload ssh'
@@ -535,8 +533,7 @@ PENDING
 fi
 
 cat <<'FOOTER'
-The CA is not on this host and never should be. It stays on the operator's
-machine; this box relays public keys and certificates. A full compromise here
-yields public material and expired invite codes, and cannot mint a certificate.
+This host stores public keys and certificates only. Signing happens on the
+machine holding the CA, which must be reachable while an invite is redeemed.
 
 FOOTER

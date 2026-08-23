@@ -58,7 +58,7 @@ Initial release. Self-hosted SSH bastion + reverse-tunnel substrate. Pairs with 
 In [`deploy/bastion/`](deploy/bastion/) — ship these to the bastion VPS during setup (see the directory's README for the procedure).
 
 - `10-bastionhub.conf` — foundational sshd drop-in: `TrustedUserCAKeys`, `RevokedKeys`, optional `HostCertificate`, plus `Match User gw-tunnel` (with `PermitListen 12001-12099`) and `Match User gw-user`.
-- `30-passthrough-acl.conf` + `principal-to-acl.sh` — optional Pattern B for per-principal `permitopen` scoping via `AuthorizedPrincipalsCommand`.
+- `30-passthrough-acl.conf` + `principal-to-acl.sh` — optional per-principal `permitopen` scoping via `AuthorizedPrincipalsCommand`.
 
 ### Added — Cross-platform
 

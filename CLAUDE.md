@@ -1,32 +1,32 @@
 # bastionhub — contributor / agent context
 
-Self-hosted SSH bastion + reverse-tunnel substrate. Pairs with [sshca](https://github.com/roselabs-io/sshca) for cert auth. Single Go binary, two intended deps (`urfave/cli/v3` v3.9.0 + `gopkg.in/yaml.v3` v3.0.1). Substrate-narrow scope: no policy, no registry, no observability.
+SSH bastion and reverse-tunnel manager. Uses [sshca](https://github.com/roselabs-io/sshca) for certificate operations. Single Go binary, two dependencies (`urfave/cli/v3` v3.9.0 and `gopkg.in/yaml.v3` v3.0.1). No policy schema, no observability.
 
 ## Read order
 
 1. This file
-2. [README.md](README.md) — install + Quick start + Stability promises
+2. [README.md](README.md) — commands, usage, stability
 3. [CHANGELOG.md](CHANGELOG.md) — what shipped per release
 4. [main.go](main.go) + [main_test.go](main_test.go) — engineer-side + dispatch + Linux/Darwin install/setup
-5. [deploy/bastion/](deploy/bastion/) — bastion-VPS sshd drop-ins + Pattern B script
+5. [deploy/](deploy/) — the installer and the bastion-side sshd drop-ins
 
 ## Project shape
 
-**What this is:** a small CLI + deploy scripts for running a self-hosted SSH bastion with reverse tunnels from a fleet of "endpoints" (boxes behind NAT that dial home to the bastion). Cert auth via `sshca`. Engineer-side commands cross-platform; endpoint-side `install`/`setup` Linux + macOS.
+**What this is:** a CLI and deploy scripts for an SSH bastion with reverse tunnels from endpoints that have no reachable address. Certificate operations are delegated to `sshca`. Operator-side commands run on Linux, macOS and Windows; `endpoint install` and `endpoint setup` run on Linux and macOS.
 
 **What this isn't:**
 
-- A cert authority. Shells out to `sshca` for every cert operation.
+- A certificate authority. Every certificate operation is delegated to `sshca`.
 - A policy engine. No roles, no customers, no projects. Just tunnel endpoints.
-- A multi-substrate connectivity tool. SSH-bastion + reverse-tunnel only.
+- A multi-transport connectivity tool. SSH bastion and reverse tunnels only.
 
 ## Key principles
 
-1. **Substrate-narrow scope.** Run the SSH-bastion + reverse-tunnel pattern well. Anything richer (policy, audit beyond connection logs, fleet observability) belongs upstream.
-2. **Cert auth via `sshca`.** No in-process signing. `sshca` is a required runtime dependency (`bastionhub endpoint enroll` shells out to it).
-3. **Schema-neutral local config.** `endpoints.yaml` carries port, user, identity, description. It does NOT know about customer, role, or principal vocabulary.
-4. **Stock OpenSSH on both ends.** No custom sshd, no patches. Drop-ins + `AuthorizedPrincipalsCommand` for per-principal scoping (Pattern B).
-5. **Reverse tunnels via autossh + systemd / launchd.** Battle-tested, not invented here.
+1. **Narrow scope.** SSH bastion and reverse tunnels only. Policy, fleet observability and audit beyond connection logs belong in a caller.
+2. **No in-process signing.** `sshca` is a runtime dependency; `endpoint enroll` and `invite` shell out to it.
+3. **Schema-neutral config.** `endpoints.yaml` carries port, user, identity and description. It has no concept of customer, role or principal vocabulary.
+4. **Stock OpenSSH.** No patched sshd. Configuration is drop-ins, plus `AuthorizedPrincipalsCommand` where per-principal scoping is required.
+5. **Persistence via the host init system.** systemd, launchd, or the Windows task scheduler, with autossh where it is available.
 
 ## Contract surface (semver-disciplined)
 
