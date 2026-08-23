@@ -894,10 +894,10 @@ func main() {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "url", Usage: "public URL of `bastionhub serve` (or $BASTIONHUB_SERVE_URL)"},
 					&cli.StringFlag{Name: "admin-token", Usage: "admin token from `bastionhub serve` (or $BASTIONHUB_ADMIN_TOKEN)"},
-					&cli.StringFlag{Name: "shape", Usage: "'device' (stays, survives reboots) or 'session' (one sitting, leaves nothing)", Value: "device"},
+					&cli.StringFlag{Name: "shape", Usage: "'device' (must be reachable, survives reboots), 'session' (reachable for one sitting), or 'access' (needs to reach the fleet — your other laptop)", Value: "device"},
 					&cli.IntFlag{Name: "port", Usage: "bastion-side listen port (default: next free in 12001-12099)"},
-					&cli.StringFlag{Name: "principal", Usage: "cert principal (default 'gw-tunnel')"},
-					&cli.StringFlag{Name: "valid", Usage: "cert validity (default '+52w' for device, '+12h' for session)"},
+					&cli.StringFlag{Name: "principal", Usage: "cert principal (default: gw-tunnel for device/session, gw-user for access)"},
+					&cli.StringFlag{Name: "valid", Usage: "cert validity (default '+52w' for device, '+12h' otherwise)"},
 					&cli.DurationFlag{Name: "ttl", Usage: "how long the invite code is redeemable", Value: 30 * time.Minute},
 					&cli.StringFlag{Name: "user", Usage: "the user to SSH as on the endpoint", Value: "root"},
 					&cli.StringFlag{Name: "identity", Usage: "path to SSH key to use for auth to this endpoint"},

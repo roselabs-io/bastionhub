@@ -151,12 +151,37 @@ The cost of that property: **you have to be online when an invite is redeemed.**
 That is a direct consequence of the CA not being on the VPS, and it is the
 intended trade.
 
-### Two shapes
+### Three shapes
 
-| `--shape` | For | Persistence | Default validity |
-|---|---|---|---|
-| `device` | A machine that stays — controller, gateway box | systemd / launchd / scheduled task; survives reboots | `+52w` |
-| `session` | A laptop, one sitting | none — closing the window removes the key | `+12h` |
+Two directions of access, and they are not interchangeable — `gw-tunnel` may
+listen but gets no shell and no local forwards; `gw-user` may open local
+forwards so ProxyJump works, but may not listen.
+
+| `--shape` | For | What it does | Principal | Default validity |
+|---|---|---|---|---|
+| `device` | A machine that must be **reachable** and stays — controller, gateway box | systemd / launchd / scheduled task around `ssh -R`; survives reboots | `gw-tunnel` | `+52w` |
+| `session` | A machine that must be reachable for **one sitting** | holds `ssh -R` in the foreground; closing the window removes the key | `gw-tunnel` | `+12h` |
+| `access` | A machine that needs to **reach** the fleet — your other laptop | writes a cert and an ssh config block; opens no tunnel and runs nothing | `gw-user` | `+12h` |
+
+The principal follows the shape automatically. Overriding it is allowed but
+warned about, because the mismatch is silent: a `gw-user` cert authenticates
+fine and then cannot open the tunnel the script just set up.
+
+### Access fans out
+
+An `access` cert is not bound to any endpoint. It authenticates to the bastion
+as `gw-user`, and from there ProxyJump reaches **any** port the bastion is
+listening on — including endpoints enrolled long after the cert was issued.
+
+So the second laptop is a one-time setup:
+
+```sh
+bastionhub invite my-work-laptop --shape access --valid +52w
+```
+
+Every device you invite afterwards is reachable from it with no re-issue. The
+cert's validity window is the only thing that ends it — which is what `sshca
+cert revoke` and the KRL are for if it needs to end sooner.
 
 ### Serving it
 

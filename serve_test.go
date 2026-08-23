@@ -603,3 +603,90 @@ func TestPollBoundTracksInviteTTL(t *testing.T) {
 		}
 	}
 }
+
+// -----------------------------------------------------------------------------
+// The access shape — a machine that reaches the fleet rather than being reached
+// -----------------------------------------------------------------------------
+
+func TestAccessShapeOpensNoTunnel(t *testing.T) {
+	s := newTestServer(t)
+	inv := &Invite{Code: "TESTCODE", Name: "work-mac", Shape: shapeAccess}
+	script := shellBootstrap(s.baseURL, inv)
+
+	for _, forbidden := range []string{"-R ", "systemctl enable", "launchctl load", "gw-tunnel@"} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("access script contains %q — it must not open or persist a tunnel", forbidden)
+		}
+	}
+	if !strings.Contains(script, "User gw-user") {
+		t.Error("access script does not configure gw-user")
+	}
+	if !strings.Contains(script, "Host bastionhub") {
+		t.Error("access script writes no ssh config block")
+	}
+}
+
+// The cert is the access; a temp dir with a cleanup trap would throw it away.
+func TestAccessShapeKeepsItsCert(t *testing.T) {
+	s := newTestServer(t)
+	inv := &Invite{Code: "TESTCODE", Name: "work-mac", Shape: shapeAccess}
+	script := shellBootstrap(s.baseURL, inv)
+	if strings.Contains(script, "trap 'rm -rf") {
+		t.Error("access script deletes its own key on exit")
+	}
+	if !strings.Contains(script, `KEYDIR="$HOME/.ssh"`) {
+		t.Error("access script does not write into ~/.ssh")
+	}
+}
+
+// Re-running must not stack duplicate Host stanzas in ~/.ssh/config.
+func TestAccessShapeIsIdempotent(t *testing.T) {
+	s := newTestServer(t)
+	inv := &Invite{Code: "TESTCODE", Name: "work-mac", Shape: shapeAccess}
+	script := shellBootstrap(s.baseURL, inv)
+	if !strings.Contains(script, "awk") || !strings.Contains(script, "grep -q") {
+		t.Error("access script does not strip a previously written block before appending")
+	}
+}
+
+func TestPrincipalFollowsShape(t *testing.T) {
+	cases := map[inviteShape]string{
+		shapeDevice:  "gw-tunnel",
+		shapeSession: "gw-tunnel",
+		shapeAccess:  "gw-user",
+	}
+	for shape, want := range cases {
+		if got := defaultPrincipalFor(shape); got != want {
+			t.Errorf("defaultPrincipalFor(%s) = %q, want %q", shape, got, want)
+		}
+	}
+}
+
+func TestAccessInviteNeedsNoPort(t *testing.T) {
+	s := newTestServer(t)
+	body := `{"name":"work-mac","shape":"access","principal":"gw-user","valid":"+12h"}`
+	w := s.req(t, http.MethodPost, "/api/invite", body, s.adminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("access invite without a port was rejected: %d %s", w.Code, w.Body.String())
+	}
+	// Device invites still require one — nothing would listen otherwise.
+	body = `{"name":"tex","shape":"device","principal":"gw-tunnel"}`
+	if w := s.req(t, http.MethodPost, "/api/invite", body, s.adminToken); w.Code == http.StatusOK {
+		t.Error("device invite without a port was accepted")
+	}
+}
+
+func TestAllThreeShapesProduceValidShell(t *testing.T) {
+	s := newTestServer(t)
+	for _, shape := range []inviteShape{shapeDevice, shapeSession, shapeAccess} {
+		inv := &Invite{Code: "TESTCODE", Name: "x", Port: 12005, Shape: shape}
+		dir := t.TempDir()
+		path := dir + "/b.sh"
+		if err := osWriteFile(path, shellBootstrap(s.baseURL, inv)); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := runCmd("sh", "-n", path); err != nil {
+			t.Errorf("shape %s: invalid sh: %v\n%s", shape, err, out)
+		}
+	}
+}

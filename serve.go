@@ -74,7 +74,36 @@ const (
 	// shapeSession: a laptop, one sitting. The tunnel runs in the foreground of
 	// the terminal window; close it and nothing remains on the machine.
 	shapeSession inviteShape = "session"
+	// shapeAccess: a machine that needs to REACH the fleet rather than be
+	// reached by it — the operator's other laptop. It gets a gw-user cert and
+	// an ssh config block for ProxyJump, and opens no tunnel at all.
+	//
+	// The distinction is the whole security model: gw-tunnel may listen but
+	// gets no shell and no local forwards; gw-user may open local forwards so
+	// ProxyJump works, but may not listen. Neither can do the other's job, so
+	// one script serving both would be handing out the wrong credential half
+	// the time.
+	shapeAccess inviteShape = "access"
 )
+
+// defaultPrincipalFor returns the only principal that makes sense for a shape.
+// Getting this wrong is silent and confusing: a gw-user cert on a machine
+// trying to open a reverse tunnel authenticates and then fails to listen.
+func defaultPrincipalFor(shape inviteShape) string {
+	if shape == shapeAccess {
+		return "gw-user"
+	}
+	return "gw-tunnel"
+}
+
+// defaultValidityFor: a device that stays is renewed as a scheduled event; a
+// laptop is a sitting.
+func defaultValidityFor(shape inviteShape) string {
+	if shape == shapeDevice {
+		return "+52w"
+	}
+	return "+12h"
+}
 
 // Invite is one pending enrollment. It is created by the operator, redeemed by
 // the far end, and holds only public material at every stage.
@@ -414,12 +443,16 @@ func (s *server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad request body")
 		return
 	}
-	if req.Name == "" || req.Port == 0 {
-		writeErr(w, http.StatusBadRequest, "name and port are required")
+	if req.Name == "" {
+		writeErr(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if req.Port == 0 && inviteShape(req.Shape) != shapeAccess {
+		writeErr(w, http.StatusBadRequest, "port is required for device and session invites")
 		return
 	}
 	shape := inviteShape(req.Shape)
-	if shape != shapeDevice && shape != shapeSession {
+	if shape != shapeDevice && shape != shapeSession && shape != shapeAccess {
 		shape = shapeDevice
 	}
 	ttl := defaultInviteTTL
@@ -801,9 +834,15 @@ func (s *server) routes() http.Handler {
 // to pipe into a shell.
 func shellBootstrap(baseURL string, inv *Invite) string {
 	tmpl := shellBootstrapCommon
-	if inv.Shape == shapeSession {
+	keydir, sshArgs := keydirBlockDevice, sshArgsBlock
+	switch inv.Shape {
+	case shapeSession:
 		tmpl += shellBootstrapSessionTail
-	} else {
+		keydir = keydirBlockSession
+	case shapeAccess:
+		tmpl += shellBootstrapAccessTail
+		keydir, sshArgs = keydirBlockAccess, ""
+	default:
 		tmpl += shellBootstrapDeviceTail
 	}
 	r := strings.NewReplacer(
@@ -812,9 +851,37 @@ func shellBootstrap(baseURL string, inv *Invite) string {
 		"@@NAME@@", shellQuote(inv.Name),
 		"@@SHAPE@@", string(inv.Shape),
 		"@@POLLS@@", strconv.Itoa(pollsUntil(inv)),
+		"@@KEYDIR_BLOCK@@", keydir,
+		"@@SSHARGS_BLOCK@@", sshArgs,
 	)
 	return r.Replace(tmpl)
 }
+
+// Where the keypair lives, per shape. A machine receives only its own block —
+// shipping the other two would mean an access machine carrying tunnel code it
+// will never run, which is exactly the kind of thing that reads as a promise.
+const (
+	keydirBlockDevice = `KEYDIR="$HOME/.bastionhub-tunnel"
+mkdir -p "$KEYDIR"
+chmod 700 "$KEYDIR"
+KEY="$KEYDIR/id_ed25519"`
+
+	// A session leaves nothing behind: the key dies with the shell.
+	keydirBlockSession = `KEYDIR=$(mktemp -d "${TMPDIR:-/tmp}/bastionhub.XXXXXX")
+trap 'rm -rf "$KEYDIR"' EXIT INT TERM
+mkdir -p "$KEYDIR"
+chmod 700 "$KEYDIR"
+KEY="$KEYDIR/id_ed25519"`
+
+	// The cert IS the access here, so it has to outlive this script.
+	keydirBlockAccess = `KEYDIR="$HOME/.ssh"
+mkdir -p "$KEYDIR"
+KEY="$KEYDIR/bastionhub-user"`
+
+	sshArgsBlock = `
+SSH_ARGS="-N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new -i $KEY -R $PORT:localhost:22 gw-tunnel@$BASTION"
+`
+)
 
 // pollsUntil returns how many 2-second polls cover the invite's remaining life.
 // Hardcoding this would mean a far end giving up while its invite is still
@@ -846,16 +913,7 @@ SHAPE="@@SHAPE@@"
 command -v ssh-keygen >/dev/null 2>&1 || { echo "error: ssh-keygen not found" >&2; exit 1; }
 command -v curl       >/dev/null 2>&1 || { echo "error: curl not found" >&2; exit 1; }
 
-if [ "$SHAPE" = "device" ]; then
-    KEYDIR="$HOME/.bastionhub-tunnel"
-else
-    KEYDIR=$(mktemp -d "${TMPDIR:-/tmp}/bastionhub.XXXXXX")
-    # A session leaves nothing behind: the key dies with the shell.
-    trap 'rm -rf "$KEYDIR"' EXIT INT TERM
-fi
-mkdir -p "$KEYDIR"
-chmod 700 "$KEYDIR"
-KEY="$KEYDIR/id_ed25519"
+@@KEYDIR_BLOCK@@
 
 if [ ! -f "$KEY" ]; then
     echo "Generating a keypair on this machine..."
@@ -898,8 +956,7 @@ echo "Certificate received:"
 ssh-keygen -Lf "$KEY-cert.pub" | grep -E 'Valid|Principals' -A1 | sed 's/^/    /'
 echo
 
-SSH_ARGS="-N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new -i $KEY -R $PORT:localhost:22 gw-tunnel@$BASTION"
-`
+@@SSHARGS_BLOCK@@`
 
 // shellBootstrapSessionTail holds the tunnel in the foreground. Nothing is
 // installed, and the key directory is removed by the EXIT trap above.
@@ -912,6 +969,46 @@ echo "Connecting. Close this window to disconnect; nothing is left on this machi
 ssh $SSH_ARGS || true
 rm -rf "$KEYDIR"
 echo "Disconnected. Key material removed."
+`
+
+// shellBootstrapAccessTail sets this machine up to REACH the fleet rather than
+// be reached by it. No tunnel, no service, nothing running: just a gw-user cert
+// and an ssh config block, so `ssh -J bastion <host>` works.
+const shellBootstrapAccessTail = `
+CONF="$HOME/.ssh/config"
+mkdir -p "$HOME/.ssh"
+chmod 700 "$HOME/.ssh" 2>/dev/null || true
+
+# Replace any block we wrote before, so re-running is idempotent rather than
+# appending a second, conflicting Host stanza.
+if [ -f "$CONF" ] && grep -q "^Host bastionhub\$" "$CONF"; then
+    awk -v h="Host bastionhub" '
+        $0 == h {skip=1; next}
+        skip && /^Host / {skip=0}
+        !skip {print}
+    ' "$CONF" > "$CONF.bastionhub.tmp" && mv "$CONF.bastionhub.tmp" "$CONF"
+fi
+
+cat >> "$CONF" <<CFG
+Host bastionhub
+    HostName $BASTION
+    User gw-user
+    IdentityFile $KEY
+    IdentitiesOnly yes
+    StrictHostKeyChecking accept-new
+CFG
+chmod 600 "$CONF"
+
+echo
+echo "Done. This machine can now reach the fleet through the bastion."
+echo
+echo "  Test it:        ssh bastionhub true && echo ok"
+echo "  Reach a device: ssh -J bastionhub <user>@localhost -p <port>"
+echo
+echo "The operator can tell you the port for a given device."
+echo
+echo "This access expires with the certificate:"
+ssh-keygen -Lf "$KEY-cert.pub" | grep -i valid | sed 's/^/    /'
 `
 
 // shellBootstrapDeviceTail makes the tunnel survive reboots, using systemd or
@@ -1037,6 +1134,36 @@ if ($Shape -ne "device") {
         Remove-Item -Recurse -Force $KeyDir -ErrorAction SilentlyContinue
         Write-Host "Disconnected. Key material removed."
     }
+    exit 0
+}
+
+if ($Shape -eq "access") {
+    # Reach the fleet rather than be reached by it: no tunnel, just a cert and
+    # an ssh config block.
+    $conf = "$env:USERPROFILE\.ssh\config"
+    New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.ssh" | Out-Null
+    if (Test-Path $conf) {
+        # Drop any block we wrote before so re-running stays idempotent.
+        $lines = Get-Content $conf; $out = @(); $skip = $false
+        foreach ($l in $lines) {
+            if ($l -match '^Host bastionhub\s*$') { $skip = $true; continue }
+            if ($skip -and $l -match '^Host ') { $skip = $false }
+            if (-not $skip) { $out += $l }
+        }
+        Set-Content -Path $conf -Value $out
+    }
+    Add-Content -Path $conf -Value @"
+Host bastionhub
+    HostName $($resp.bastion)
+    User gw-user
+    IdentityFile $Key
+    IdentitiesOnly yes
+    StrictHostKeyChecking accept-new
+"@
+    Write-Host ""
+    Write-Host "Done. This machine can now reach the fleet through the bastion."
+    Write-Host "  Test it:        ssh bastionhub true"
+    Write-Host "  Reach a device: ssh -J bastionhub <user>@localhost -p <port>"
     exit 0
 }
 
@@ -1269,29 +1396,47 @@ func inviteCmd(ctx context.Context, cmd *cli.Command) error {
 		return cli.Exit("sshca not found in PATH — this laptop holds the CA and does the signing. Install from https://github.com/roselabs-io/sshca", 1)
 	}
 
-	shape := cmd.String("shape")
-	if shape != string(shapeDevice) && shape != string(shapeSession) {
-		return cli.Exit("--shape must be 'device' (stays, survives reboots) or 'session' (one sitting, leaves nothing)", 1)
+	shape := inviteShape(cmd.String("shape"))
+	switch shape {
+	case shapeDevice, shapeSession, shapeAccess:
+	default:
+		return cli.Exit("--shape must be one of:\n"+
+			"  device   a machine that stays and must be REACHABLE (controller, gateway box)\n"+
+			"  session  a machine that must be reachable for one sitting, leaving nothing behind\n"+
+			"  access   a machine that needs to REACH the fleet (your other laptop)", 1)
 	}
+
+	// Principal follows from shape unless overridden. Mismatching them is
+	// silent and confusing — a gw-user cert authenticates fine and then cannot
+	// open the tunnel the script just set up.
 	principal := cmd.String("principal")
+	if principal == "" {
+		principal = defaultPrincipalFor(shape)
+	} else if principal != defaultPrincipalFor(shape) {
+		fmt.Printf("note: --shape %s normally uses principal %q; you asked for %q.\n",
+			shape, defaultPrincipalFor(shape), principal)
+	}
 	valid := cmd.String("valid")
 	if valid == "" {
-		if shape == string(shapeDevice) {
-			valid = "+52w"
-		} else {
-			valid = "+12h"
-		}
+		valid = defaultValidityFor(shape)
 	}
+
+	// An access invite grants a machine the ability to reach the fleet. It is
+	// not an endpoint: nothing listens for it, so it takes no port and gets no
+	// registry entry.
+	isEndpoint := shape != shapeAccess
 
 	cfg, err := loadConfig()
 	if err != nil {
 		return cli.Exit(err.Error(), 1)
 	}
-	if _, exists := cfg.Endpoints[name]; exists {
+	if _, exists := cfg.Endpoints[name]; isEndpoint && exists {
 		return cli.Exit(fmt.Sprintf("endpoint %q already registered — `bastionhub endpoint unregister %s` first, or pick another name", name, name), 1)
 	}
 	port := int(cmd.Int("port"))
-	if port == 0 {
+	if !isEndpoint {
+		port = 0
+	} else if port == 0 {
 		if port, err = allocatePort(cfg); err != nil {
 			return cli.Exit(err.Error(), 1)
 		}
@@ -1308,7 +1453,7 @@ func inviteCmd(ctx context.Context, cmd *cli.Command) error {
 	// 1. Mint the invite.
 	reqBody, _ := json.Marshal(map[string]any{
 		"name": name, "port": port, "principal": principal,
-		"valid": valid, "shape": shape, "user": cmd.String("user"),
+		"valid": valid, "shape": string(shape), "user": cmd.String("user"),
 		"ttl_seconds": int(cmd.Duration("ttl").Seconds()),
 	})
 	var created struct {
@@ -1341,7 +1486,7 @@ func inviteCmd(ctx context.Context, cmd *cli.Command) error {
 	fp, err := fingerprintOf(pubkey)
 	if err == nil {
 		fmt.Printf("\n  fingerprint: %s\n", fp)
-		fmt.Printf("  will sign as: principal=%s valid=%s port=%d\n\n", principalOrDefault(principal), valid, port)
+		fmt.Printf("  will sign as: principal=%s valid=%s shape=%s\n\n", principal, valid, shape)
 	}
 	if !cmd.Bool("yes") {
 		fmt.Print("Ask them to read their fingerprint back. Sign it? [y/N] ")
@@ -1354,7 +1499,7 @@ func inviteCmd(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	// 4. Sign locally. The CA never leaves this machine.
-	certPEM, keyID, err := signPubkeyLocally(pubkey, name, principalOrDefault(principal), valid, cmd.String("ca-dir"))
+	certPEM, keyID, err := signPubkeyLocally(pubkey, name, principal, valid, cmd.String("ca-dir"))
 	if err != nil {
 		return cli.Exit(err.Error(), 1)
 	}
@@ -1366,39 +1511,43 @@ func inviteCmd(ctx context.Context, cmd *cli.Command) error {
 	fmt.Println("✓ certificate signed and sent")
 
 	// 6. Register the endpoint locally.
-	user := cmd.String("user")
-	if user == "" {
-		user = "root"
-	}
-	cfg.Endpoints[name] = Endpoint{
-		Port:        port,
-		User:        user,
-		Identity:    cmd.String("identity"),
-		Description: cmd.String("description"),
-	}
-	if err := saveConfig(cfg); err != nil {
-		return cli.Exit(fmt.Sprintf("cert delivered but registry save failed: %v", err), 1)
+	if isEndpoint {
+		user := cmd.String("user")
+		if user == "" {
+			user = "root"
+		}
+		cfg.Endpoints[name] = Endpoint{
+			Port:        port,
+			User:        user,
+			Identity:    cmd.String("identity"),
+			Description: cmd.String("description"),
+		}
+		if err := saveConfig(cfg); err != nil {
+			return cli.Exit(fmt.Sprintf("cert delivered but registry save failed: %v", err), 1)
+		}
 	}
 
 	// 7. Confirm the far end actually picked it up.
-	if claimed := waitForClaim(ctx, client, created.Code, 60*time.Second); claimed {
+	claimed := waitForClaim(ctx, client, created.Code, 60*time.Second)
+	switch {
+	case !isEndpoint && claimed:
+		fmt.Printf("\n✓ %s can now reach the fleet\n", name)
+	case !isEndpoint:
+		fmt.Printf("\n✓ %s: cert waiting (they have not run the command yet)\n", name)
+	case claimed:
 		fmt.Printf("\n✓ %s enrolled on port %d\n", name, port)
-	} else {
+	default:
 		fmt.Printf("\n✓ %s registered on port %d (cert waiting; the far end has not fetched it yet)\n", name, port)
 	}
 	fmt.Printf("  key-id: %s\n", keyID)
 	fmt.Printf("  verify: bastionhub status\n")
-	if shape == string(shapeDevice) {
+	switch shape {
+	case shapeDevice:
 		fmt.Printf("  reach:  bastionhub ssh %s\n", name)
+	case shapeAccess:
+		fmt.Printf("  they run: ssh bastionhub true\n")
 	}
 	return nil
-}
-
-func principalOrDefault(p string) string {
-	if p == "" {
-		return "gw-tunnel"
-	}
-	return p
 }
 
 // formatCodeForReading splits a code into two groups so it survives being read
