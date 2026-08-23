@@ -96,9 +96,13 @@ The config lives at `~/.config/bastionhub/endpoints.yaml` (override with `$BASTI
 On a fresh Debian/Ubuntu VPS:
 
 ```sh
-curl -sSL https://get.roselabs.io/bastion | sudo bash -s -- \
-    --domain bastion.example.io --acme-email you@example.io
+curl -sSL https://raw.githubusercontent.com/roselabs-io/bastionhub/v0.2.0/deploy/install.sh \
+    | sudo bash -s -- --domain bastion.example.io --acme-email you@example.io
 ```
+
+The URL is pinned to a tag rather than `main`: a script that gets piped into a
+root shell should not change because someone pushed a commit. Read it first —
+that is the point of a plain file in a public repo.
 
 Then ship it the CA public key from the machine that holds the CA:
 

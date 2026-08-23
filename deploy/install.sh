@@ -1,7 +1,11 @@
 #!/bin/bash
 # bastionhub — fresh VPS to working bastion.
 #
-#   curl -sSL https://get.roselabs.io/bastion | sudo bash -s -- --domain bastion.example.io
+#   curl -sSL https://raw.githubusercontent.com/roselabs-io/bastionhub/v0.2.0/deploy/install.sh \
+#       | sudo bash -s -- --domain bastion.example.io
+#
+# Pinned to a tag on purpose: an installer people pipe into a root shell should
+# not change under them because someone pushed to main.
 #
 # What you get:
 #   - the three restricted role users (gw-tunnel, gw-user, gw-passthrough)
