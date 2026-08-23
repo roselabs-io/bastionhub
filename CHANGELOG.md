@@ -4,14 +4,22 @@ All notable changes to `bastionhub` will be documented in this file.
 
 Format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is [SemVer](https://semver.org/) once we reach v1.0; until then, breaking changes can land in minor releases — see "Stability promises" in [README.md](README.md).
 
-## [Unreleased]
+## [0.2.0] — 2026-08-23
 
 ### Added — enrollment for machines you don't control
 
 - `bastionhub serve` — the invite/relay service, runs on the bastion VPS. Mints single-use invite codes with a TTL and a scope, serves a bootstrap script at `/j/<code>`, and relays a public key to the operator and a signed certificate back. **Holds no CA and signs nothing:** it is a rendezvous point, not a signing authority. Flags: `--bastion` (required), `--listen` (default `127.0.0.1:8420`), `--base-url`, `--tls-cert`/`--tls-key`. Admin token is generated on first run and stored 0600 at `~/.config/bastionhub/admin-token` (`$BASTIONHUB_ADMIN_TOKEN_FILE`); invite state lives at `~/.config/bastionhub/invites.json` (`$BASTIONHUB_SERVE_STATE`).
 - `bastionhub invite <name>` — operator-side. Mints an invite, prints the one-line command to read to whoever is on site, waits for their public key, shows its fingerprint for out-of-band confirmation, signs locally via `sshca cert sign`, sends the certificate back, and registers the endpoint. Flags: `--url`/`$BASTIONHUB_SERVE_URL`, `--admin-token`/`$BASTIONHUB_ADMIN_TOKEN`, `--shape`, `--port`, `--principal`, `--valid`, `--ttl`, `--user`, `--identity`, `--description`, `--ca-dir`, `--yes`.
 - Bootstrap scripts for sh and PowerShell, served per-invite. They require only `ssh`, `ssh-keygen` and `curl`/`iwr` — nothing to install, no admin rights. `--shape device` installs a systemd unit, launchd agent, or scheduled task around plain `ssh` (`ServerAliveInterval` replaces autossh's dead-peer detection). `--shape session` runs in the foreground and removes its key directory on exit.
-- Windows is now supported as a far end via `invite`, though not via `endpoint install/setup`. The scheduled-task path avoids the NSSM + autossh-on-Windows problem that kept it out of scope before.
+- Windows is now supported as a far end via `invite`, though not via `endpoint install/setup`. The scheduled-task path avoids the NSSM + autossh-on-Windows problem that kept it out of scope before. **The PowerShell path has not yet been run on a real Windows machine.**
+- `--shape access` — a machine that needs to *reach* the fleet rather than be reached by it. Gets a `gw-user` cert and an ssh config block, opens no tunnel, runs nothing afterwards. An access cert is not bound to any endpoint, so one long-lived cert covers every device enrolled later.
+- `deploy/install.sh` — fresh Debian/Ubuntu VPS to working bastion in one command. Role users, sshd cert auth, the binary, `serve` under systemd, Caddy with automatic HTTPS, ufw. Re-runnable; refuses rather than fighting an existing `:80`/`:443` holder. Never installs the CA.
+
+### Fixed
+
+- **`PermitListen 12001-12099` in `deploy/bastion/10-bastionhub.conf` was invalid syntax** and sshd rejected it. This shipped in v0.1.0, so anyone following that file's own deploy instructions hit a broken config. Neither `PermitListen` nor `PermitOpen` accepts port ranges; both are now enumerated.
+- `10-bastionhub.conf` set `PasswordAuthentication no` only inside its `Match` blocks, leaving every other account on the host at the distro default. Now set host-wide, along with `ClientAlive*` so a flapping endpoint cannot hold its tunnel port.
+- `gw-user` had no `PermitOpen`, so a `gw-user` cert could forward to any address the bastion could reach — its own sshd, a database on the box, anything on its network — rather than only tunnel ports.
 
 ### Security properties
 
