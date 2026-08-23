@@ -75,8 +75,31 @@ done
 
 # --- preflight ---------------------------------------------------------------
 
-[ "$(id -u)" = "0" ] || die "run as root (sudo)"
 [ -n "$DOMAIN" ] || die "--domain is required (try --help)"
+
+# A bare IP works for SSH but not for the invite link: no CA issues
+# certificates for IP addresses, so https://<ip>/j/<code> has no valid cert.
+# Telling a technician to pass -k defeats the point — that URL is piped into a
+# shell, and TLS is the only thing stopping someone on the path choosing what
+# runs on their machine.
+if printf '%s' "$DOMAIN" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+    if [ "$SKIP_TLS" = "0" ]; then
+        cat >&2 <<MSG
+
+$DOMAIN is an IP address. Let's Encrypt cannot issue a certificate for it, so
+the invite link would have no valid TLS and the bootstrap command would fail
+on the far end.
+
+Either point a hostname at this box — any free domain works — or pass
+--skip-tls and terminate TLS yourself.
+
+MSG
+        die "refusing to set up an invite service with no usable TLS"
+    fi
+    printf '\033[33mwarning:\033[0m %s is an IP. Invite links will need TLS from whatever you put in front.\n' "$DOMAIN"
+fi
+
+[ "$(id -u)" = "0" ] || die "run as root (sudo)"
 command -v systemctl >/dev/null || die "this script needs systemd"
 command -v apt-get   >/dev/null || die "this script supports Debian/Ubuntu; adapt it for your distro"
 
