@@ -690,3 +690,79 @@ func TestAllThreeShapesProduceValidShell(t *testing.T) {
 		}
 	}
 }
+
+// The bastion needs a registry of its own; a copy of the operator's file
+// drifts from the moment it is made.
+func TestClaimedInviteIsRecordedLocally(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BASTIONHUB_CONFIG", dir+"/endpoints.yaml")
+
+	s := newTestServer(t)
+	code := mintInvite(t, s, "tex-mmv2", 12005)
+	s.req(t, http.MethodPost, "/e/"+code+"/pubkey", testPubkey, "")
+	s.req(t, http.MethodPost, "/api/invite/"+code+"/cert", testCert, s.adminToken)
+	if w := s.req(t, http.MethodGet, "/e/"+code+"/cert", "", ""); w.Code != http.StatusOK {
+		t.Fatalf("cert fetch: %d", w.Code)
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("registry not written: %v", err)
+	}
+	ep, ok := cfg.Endpoints["tex-mmv2"]
+	if !ok {
+		t.Fatalf("endpoint absent from registry: %+v", cfg.Endpoints)
+	}
+	if ep.Port != 12005 {
+		t.Errorf("port = %d, want 12005", ep.Port)
+	}
+}
+
+// An access invite grants a machine the ability to reach the fleet. Nothing
+// listens for it, so it is not an endpoint.
+func TestAccessInviteIsNotRecorded(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BASTIONHUB_CONFIG", dir+"/endpoints.yaml")
+
+	s := newTestServer(t)
+	body := `{"name":"work-mac","shape":"access","principal":"gw-user","valid":"+12h"}`
+	w := s.req(t, http.MethodPost, "/api/invite", body, s.adminToken)
+	var resp struct {
+		Code string `json:"code"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	s.req(t, http.MethodPost, "/e/"+resp.Code+"/pubkey", testPubkey, "")
+	s.req(t, http.MethodPost, "/api/invite/"+resp.Code+"/cert", testCert, s.adminToken)
+	s.req(t, http.MethodGet, "/e/"+resp.Code+"/cert", "", "")
+
+	if cfg, err := loadConfig(); err == nil {
+		if _, ok := cfg.Endpoints["work-mac"]; ok {
+			t.Error("access invite was recorded as an endpoint")
+		}
+	}
+}
+
+// A re-enrolled name updates in place rather than accumulating duplicates.
+func TestRecordEndpointUpserts(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BASTIONHUB_CONFIG", dir+"/endpoints.yaml")
+	now := time.Now().UTC()
+
+	for _, port := range []int{12005, 12006} {
+		if err := recordEndpoint(&Invite{
+			Name: "tex-mmv2", Port: port, Shape: shapeDevice, ClaimedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Endpoints) != 1 {
+		t.Fatalf("got %d entries, want 1: %+v", len(cfg.Endpoints), cfg.Endpoints)
+	}
+	if cfg.Endpoints["tex-mmv2"].Port != 12006 {
+		t.Errorf("port = %d, want the later 12006", cfg.Endpoints["tex-mmv2"].Port)
+	}
+}

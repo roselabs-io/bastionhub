@@ -220,6 +220,11 @@ processes inherit it, which is how `sshboard` works when deployed there.
 | `--base-url <url>` | `https://<bastion>` |
 | `--tls-cert`, `--tls-key` | unset |
 
+When an invite is claimed, `serve` records the endpoint in its own
+`endpoints.yaml` (`$BASTIONHUB_CONFIG`), so the bastion has a registry built
+from what it actually enrolled rather than a copy of the operator's file.
+`access` invites are not recorded: nothing listens for them.
+
 State is written to `~/.config/bastionhub/invites.json`
 (`$BASTIONHUB_SERVE_STATE`). The admin token is generated on first run and
 stored at `~/.config/bastionhub/admin-token`

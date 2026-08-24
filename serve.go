@@ -668,6 +668,20 @@ func (s *server) handleCertFetch(w http.ResponseWriter, r *http.Request, code st
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
+	// Record the endpoint locally now that it is actually in use. Without
+	// this the bastion has no registry of its own, and anything running here
+	// — sshboard in particular — depends on a copy of the operator's file,
+	// which drifts from the moment it is made.
+	//
+	// An access invite is not an endpoint: nothing listens for it.
+	if meta.Shape != shapeAccess {
+		if err := recordEndpoint(meta); err != nil {
+			// The far end already holds its certificate; failing the request
+			// now would strand it for the sake of bookkeeping.
+			fmt.Fprintf(os.Stderr, "warning: could not record endpoint %q: %v\n", meta.Name, err)
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cert":    cert,
 		"port":    meta.Port,
@@ -675,6 +689,30 @@ func (s *server) handleCertFetch(w http.ResponseWriter, r *http.Request, code st
 		"shape":   meta.Shape,
 		"name":    meta.Name,
 	})
+}
+
+// recordEndpoint upserts a claimed invite into the local endpoints registry,
+// the same endpoints.yaml the CLI reads.
+func recordEndpoint(inv *Invite) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		// No registry yet on a fresh bastion. Start one.
+		cfg = &Config{
+			BastionAlias: "bastion",
+			AdminAlias:   "bastion-root",
+			Endpoints:    map[string]Endpoint{},
+		}
+	}
+	user := inv.User
+	if user == "" {
+		user = "root"
+	}
+	cfg.Endpoints[inv.Name] = Endpoint{
+		Port:        inv.Port,
+		User:        user,
+		Description: fmt.Sprintf("enrolled %s via invite (%s)", inv.ClaimedAt.Format("2006-01-02"), inv.Shape),
+	}
+	return saveConfig(cfg)
 }
 
 // handleBootstrap: GET /j/<code> — serves the script the far end pipes to a
