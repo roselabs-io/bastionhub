@@ -223,14 +223,29 @@ func statusCmd(_ context.Context, _ *cli.Command) error {
         gsub(/ /, "", etime)
         print port " " etime
     }'`
-	out, err := exec.Command("ssh",
-		"-o", "BatchMode=yes",
-		"-o", "ConnectTimeout=5",
-		cfg.AdminAlias,
-		remoteCmd,
-	).Output()
-	if err != nil {
-		return cli.Exit(fmt.Sprintf("status query to %s failed: %v", cfg.AdminAlias, err), 1)
+	// When bastionhub runs on the bastion itself — as it does under sshboard
+	// deployed there — SSHing to admin_alias would mean the host connecting to
+	// itself. Run the query directly instead. The environment variable exists
+	// so a parent process can set it once and have child invocations inherit
+	// it, without every caller growing a flag.
+	local := os.Getenv("BASTIONHUB_LOCAL") != ""
+
+	var out []byte
+	if local {
+		out, err = exec.Command("sh", "-c", remoteCmd).Output()
+		if err != nil {
+			return cli.Exit(fmt.Sprintf("local status query failed: %v", err), 1)
+		}
+	} else {
+		out, err = exec.Command("ssh",
+			"-o", "BatchMode=yes",
+			"-o", "ConnectTimeout=5",
+			cfg.AdminAlias,
+			remoteCmd,
+		).Output()
+		if err != nil {
+			return cli.Exit(fmt.Sprintf("status query to %s failed: %v", cfg.AdminAlias, err), 1)
+		}
 	}
 	live := map[int]string{}
 	lineRE := regexp.MustCompile(`^(\d+)\s+(\S*)$`)
@@ -247,8 +262,12 @@ func statusCmd(_ context.Context, _ *cli.Command) error {
 		names = append(names, n)
 	}
 	sort.Strings(names)
+	source := cfg.AdminAlias
+	if local {
+		source = "this host"
+	}
 	fmt.Printf("Querying %s — %d configured endpoint(s), %d live listener(s)\n\n",
-		cfg.AdminAlias, len(cfg.Endpoints), len(live))
+		source, len(cfg.Endpoints), len(live))
 	fmt.Printf("%-20s %-7s %-6s %-12s %s\n", "NAME", "PORT", "STATUS", "UPTIME", "DESCRIPTION")
 	for _, n := range names {
 		ep := cfg.Endpoints[n]
@@ -874,8 +893,10 @@ func main() {
 				Action: listCmd,
 			},
 			{
-				Name:   "status",
-				Usage:  "show fleet liveness (which endpoints have an active reverse tunnel)",
+				Name:  "status",
+				Usage: "show which endpoints have an active reverse tunnel",
+				Description: "Queries the bastion over SSH using admin_alias. Set BASTIONHUB_LOCAL=1\n" +
+					"when running on the bastion itself, to query the local host directly.",
 				Action: statusCmd,
 			},
 			{

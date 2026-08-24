@@ -208,6 +208,11 @@ Use `sshca cert revoke` to end it before expiry.
 `serve` binds `127.0.0.1:8420` by default and expects TLS termination in front
 of it. `--tls-cert` and `--tls-key` serve HTTPS directly instead.
 
+`bastionhub status` queries the bastion over SSH using `admin_alias`. Set
+`BASTIONHUB_LOCAL=1` when running on the bastion itself, so the query runs
+against the local host rather than the host connecting to itself. Child
+processes inherit it, which is how `sshboard` works when deployed there.
+
 | Flag | Default |
 |---|---|
 | `--bastion <host>` | required — the hostname far ends dial for SSH |

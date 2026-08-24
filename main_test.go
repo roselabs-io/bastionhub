@@ -155,3 +155,16 @@ func TestAllocatePort_Exhausted(t *testing.T) {
 		t.Errorf("expected error when port range fully allocated")
 	}
 }
+
+// bastionhub runs on the bastion when sshboard is deployed there, where SSHing
+// to admin_alias would mean the host connecting to itself.
+func TestStatusLocalModeIsEnvControlled(t *testing.T) {
+	t.Setenv("BASTIONHUB_LOCAL", "")
+	if os.Getenv("BASTIONHUB_LOCAL") != "" {
+		t.Fatal("unset env should read empty")
+	}
+	t.Setenv("BASTIONHUB_LOCAL", "1")
+	if os.Getenv("BASTIONHUB_LOCAL") == "" {
+		t.Fatal("set env should read non-empty")
+	}
+}

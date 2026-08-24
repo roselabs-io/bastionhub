@@ -217,7 +217,9 @@ else
     # is a syntax error. PermitOpen also matches the requested host as a
     # literal string, so both spellings are needed. Generated rather than
     # written out to keep the two lists in sync with PORT_LO/PORT_HI.
-    LISTEN_PORTS=""; OPEN_PORTS=""
+    # 7890 is sshboard, reachable over a local forward if it is run on this
+    # host. Harmless to permit when it is not.
+    LISTEN_PORTS=""; OPEN_PORTS="127.0.0.1:7890 localhost:7890"
     for p in $(seq $PORT_LO $PORT_HI); do
         LISTEN_PORTS="$LISTEN_PORTS $p"
         OPEN_PORTS="$OPEN_PORTS 127.0.0.1:$p localhost:$p"
