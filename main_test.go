@@ -267,6 +267,38 @@ func TestEvaluateVerify(t *testing.T) {
 	}
 }
 
+// TestVerifyRemoteScriptCAFileWithoutFinalNewline runs verifyRemoteScript with
+// a stub sshd whose TrustedUserCAKeys file lacks a final newline; the KRL
+// record must still be reported on its own line.
+func TestVerifyRemoteScriptCAFileWithoutFinalNewline(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "user_ca.pub")
+	krlPath := filepath.Join(dir, "revoked_keys.krl")
+	if err := os.WriteFile(caPath, []byte(testUserCA+" sshca user CA 20261018"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(krlPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sshd := fmt.Sprintf("#!/bin/sh\necho 'trustedusercakeys %s'\necho 'revokedkeys %s'\n", caPath, krlPath)
+	if err := os.WriteFile(filepath.Join(dir, "sshd"), []byte(sshd), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out, err := exec.Command("sh", "-c", verifyRemoteScript).Output()
+	if err != nil {
+		t.Fatalf("script: %v", err)
+	}
+	for _, ch := range evaluateVerify(string(out), testUserCA, nil) {
+		if strings.Contains(ch.name, "CA") || strings.Contains(ch.name, "KRL") {
+			if !ch.ok {
+				t.Errorf("%s failed: %s\n%s", ch.name, ch.detail, out)
+			}
+		}
+	}
+}
+
 // TestBastionVerifyCmd drives the command with stub ssh and sshca binaries on
 // PATH; the stub ssh prints the file BASTION_OUT names, or exits 255 without it.
 func TestBastionVerifyCmd(t *testing.T) {

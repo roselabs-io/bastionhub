@@ -286,8 +286,10 @@ func statusCmd(_ context.Context, _ *cli.Command) error {
 
 // verifyRemoteScript runs on the bastion as admin_alias. Each line it prints
 // is "<kind> <subject> <result>", or "ca <key line>" for each line of the
-// TrustedUserCAKeys file. The CA and KRL paths come from `sshd -T`, so the
-// effective configuration is checked rather than the installer's defaults.
+// TrustedUserCAKeys file. The echo after the CA lines ends a last line that
+// has no newline, so the KRL record starts a line of its own. The CA and KRL
+// paths come from `sshd -T`, so the effective configuration is checked rather
+// than the installer's defaults.
 const verifyRemoteScript = `d=/etc/ssh/sshd_config.d
 for f in 10-bastionhub.conf 30-passthrough-acl.conf; do
   if [ -f "$d/$f" ]; then echo "dropin $f ok"; else echo "dropin $f missing"; fi
@@ -299,7 +301,7 @@ cfg=$(sshd -T 2>/dev/null)
 ca=$(printf '%s\n' "$cfg" | awk '$1 == "trustedusercakeys" {print $2}')
 krl=$(printf '%s\n' "$cfg" | awk '$1 == "revokedkeys" {print $2}')
 echo "cafile ${ca:-none}"
-if [ -n "$ca" ] && [ "$ca" != none ]; then sed 's/^/ca /' "$ca" 2>/dev/null; fi
+if [ -n "$ca" ] && [ "$ca" != none ]; then sed 's/^/ca /' "$ca" 2>/dev/null; echo; fi
 if [ -n "$krl" ] && [ "$krl" != none ] && cat "$krl" >/dev/null 2>&1; then
   echo "krl $krl ok"
 else
