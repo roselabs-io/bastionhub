@@ -137,5 +137,8 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v10.2.0
 
+      - name: Prepare secret scan
+        run: just secrets-prepare
+
       - name: Gate
         run: just gate
