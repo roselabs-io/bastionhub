@@ -4,6 +4,12 @@ All notable changes to `bastionhub` will be documented in this file.
 
 Format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is [SemVer](https://semver.org/) once we reach v1.0; until then, breaking changes can land in minor releases — see "Stability promises" in [README.md](README.md).
 
+## [Unreleased]
+
+### Added
+
+- `bastionhub bastion verify` — checks the bastion over SSH (`admin_alias`) and prints PASS or FAIL per check: the `10-bastionhub.conf` and `30-passthrough-acl.conf` drop-ins exist; the `gw-tunnel`, `gw-user` and `gw-passthrough` accounts exist; the `TrustedUserCAKeys` file lists the local `sshca` user CA; the `RevokedKeys` KRL is readable. Exits 1 when a check fails.
+
 ## [0.2.0] — 2026-08-23
 
 ### Added — enrollment for machines you don't control

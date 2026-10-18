@@ -55,7 +55,7 @@ Download from [GitHub Releases](https://github.com/roselabs-io/bastionhub/releas
 
 ## Platform support
 
-| | Engineer-side (`list` / `status` / `ssh` / `invite` / `endpoint register/enroll/unregister`) | Endpoint-side (`endpoint install` / `setup`) | Far end via `invite` |
+| | Engineer-side (`list` / `status` / `ssh` / `invite` / `bastion verify` / `endpoint register/enroll/unregister`) | Endpoint-side (`endpoint install` / `setup`) | Far end via `invite` |
 |---|---|---|---|
 | Linux | ✓ | ✓ (systemd + apt/dnf/yum/apk) | ✓ (systemd) |
 | macOS | ✓ | ✓ (launchd + Homebrew, per-user, no sudo) | ✓ (launchd) |
@@ -133,6 +133,30 @@ Options:
 
 The script is idempotent; re-running preserves the admin token. The URL is
 pinned to a release tag, so the file does not change between runs.
+
+### Verifying a bastion
+
+```sh
+bastionhub bastion verify
+```
+
+Connects to `admin_alias` over SSH (`BatchMode=yes`, `ConnectTimeout=5`) and
+prints `PASS` or `FAIL` for each check. It changes nothing on the bastion.
+
+| Check | Passes when |
+|---|---|
+| sshd drop-ins | `/etc/ssh/sshd_config.d/10-bastionhub.conf` and `30-passthrough-acl.conf` exist, one check each |
+| Role accounts | `gw-tunnel`, `gw-user` and `gw-passthrough` exist, one check each |
+| CA trust | the `TrustedUserCAKeys` file reported by `sshd -T` lists the user CA that `sshca ca show` prints on this machine (`$SSHCA_CA_DIR`, default `./ca`) |
+| KRL | the `RevokedKeys` file reported by `sshd -T` is readable |
+
+Exit code 0 when every check passes; 1 when a check fails, the bastion cannot
+be reached, or `endpoints.yaml` is missing.
+
+`sshd -T` and the KRL need root, so `admin_alias` must log in as root.
+`install.sh` does not install `30-passthrough-acl.conf`, so that check fails on
+a bastion set up by the installer alone until Step 2 of
+[`deploy/bastion/README.md`](deploy/bastion/README.md) is done.
 
 ## Enrollment
 
