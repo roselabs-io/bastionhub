@@ -9,10 +9,11 @@ optional per-principal scoping, which the installer does not configure.
 | File | Deploy target | Purpose |
 |---|---|---|
 | [`10-bastionhub.conf`](10-bastionhub.conf) | `/etc/ssh/sshd_config.d/10-bastionhub.conf` (root:root, 644) | CA trust, host-wide settings, and the `gw-tunnel` and `gw-user` Match blocks |
-| [`principal-to-acl.sh`](principal-to-acl.sh) | `/usr/local/bin/principal-to-acl` (root:root, 755) | Optional. `AuthorizedPrincipalsCommand` script emitting per-principal `permitopen` lines |
+| [`principal-to-acl.sh`](principal-to-acl.sh) | `/usr/local/bin/principal-to-acl` (root:root, 755) | Optional. `AuthorizedPrincipalsCommand` script emitting per-principal `permitopen` lines from the mapping file |
+| [`principal-acl`](principal-acl) | `/etc/bastionhub/principal-acl` (root:root, 644) | Optional. The mapping file read by `principal-to-acl`; the shipped copy holds two test principals |
 | [`30-passthrough-acl.conf`](30-passthrough-acl.conf) | `/etc/ssh/sshd_config.d/30-passthrough-acl.conf` (root:root, 644) | Optional. Wires that script into a `Match User gw-passthrough` block |
 
-`10-bastionhub.conf` is sufficient on its own. The other two are needed only
+`10-bastionhub.conf` is sufficient on its own. The other three are needed only
 for per-principal `permitopen` scoping, where a distinct principal is issued per
 downstream device rather than granting the whole tunnel port range.
 
@@ -63,9 +64,51 @@ ssh bastion-root 'useradd -m -s /usr/sbin/nologin gw-passthrough || true'
 scp deploy/bastion/principal-to-acl.sh bastion-root:/usr/local/bin/principal-to-acl
 ssh bastion-root 'chown root:root /usr/local/bin/principal-to-acl && chmod 755 /usr/local/bin/principal-to-acl'
 
-# 3. Ship the sshd drop-in + reload
+# 3. Install the mapping file. gw-passthrough runs the script and must be able to read it.
+ssh bastion-root 'mkdir -p /etc/bastionhub'
+scp deploy/bastion/principal-acl bastion-root:/etc/bastionhub/principal-acl
+ssh bastion-root 'chown root:root /etc/bastionhub/principal-acl && chmod 644 /etc/bastionhub/principal-acl'
+
+# 4. Ship the sshd drop-in + reload
 scp deploy/bastion/30-passthrough-acl.conf bastion-root:/etc/ssh/sshd_config.d/30-passthrough-acl.conf
 ssh bastion-root 'sshd -t && systemctl reload ssh && echo reloaded'
+```
+
+### The mapping file
+
+`principal-to-acl` reads `/etc/bastionhub/principal-acl` on each certificate
+authentication as `gw-passthrough`. The environment variable
+`PRINCIPAL_TO_ACL_MAP` overrides the path; sshd runs the script with an empty
+environment, so on the bastion the default path applies.
+
+Format, one principal per line:
+
+```text
+<principal> <host:port> [<host:port> ...]
+```
+
+| Line | Effect |
+|---|---|
+| blank, or first field starts with `#` | ignored |
+| principal and one or more destinations | one output line: `permitopen="<host:port>"` per destination, then `no-pty,no-X11-forwarding,no-agent-forwarding <principal>` |
+| principal with no destination | skipped, logged |
+| a field with a character outside `A-Za-z0-9._:-` | skipped, logged |
+
+Fields are separated by spaces or tabs. Log lines go to syslog with the tag
+`principal-to-acl`. When the file is missing or unreadable, the script logs
+it, emits nothing and exits 1, and sshd accepts no principal for
+`gw-passthrough`.
+
+`PermitOpen` matching is literal: `127.0.0.1:12001` and `localhost:12001` are
+different destinations, and a principal that must reach both lists both. The
+character check rejects bracketed IPv6 destinations (`[::1]:22`).
+
+An edit to the file applies to the next authentication; sshd needs no reload.
+To add an edge passthrough, append a line, then sign a certificate with that
+principal:
+
+```bash
+ssh bastion-root 'echo "gw-edge-ssh-site-a 127.0.0.1:12002" >> /etc/bastionhub/principal-acl'
 ```
 
 ### Step 3 — Sign your first user cert + verify
@@ -86,7 +129,7 @@ ssh -J gw-user@<bastion-host> nobody@nothing 2>&1 | head -1
 ### Verify per-principal scoping (optional)
 
 ```bash
-# Sign a certificate with one of the principals listed in principal-to-acl.sh
+# Sign a certificate with one of the principals listed in /etc/bastionhub/principal-acl
 sshca cert sign --ca user --principal gw-edge-ssh-test-loopback \
     --valid +1h --key-id 'test-passthrough-pattern' \
     --dir ./ca /path/to/test-key.pub
