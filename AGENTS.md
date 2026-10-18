@@ -41,12 +41,13 @@ A merge into `main` deploys nothing. A release is a `v*` tag; the Homebrew formu
 | `just gate` | `check`, `test`, `build`; the deterministic gate CI runs |
 | `just fix` | `gofmt -w .` |
 | `just ff` | switches to `main` and fast-forwards it from `origin`; refuses local changes or a diverged `main` |
+| `just audit` | not defined on `main`; bastionhub#2 adds it |
 
 `up`, `down` and `logs` are not applicable (`checks.recipes.not_applicable` of `pipeline.yaml`):
 there is no local stack. `just` and Go are required.
 
 `just gate` runs the checks of `ci.yml` plus the format check; `ci.yml` runs `go test` on
-linux/amd64 only, the gate on the host. The gate does not scan for secrets and there is no `audit` recipe (bastionhub#2).
+linux/amd64 only, the gate on the host. The gate does not scan for secrets (bastionhub#2).
 
 ## CI
 
@@ -60,7 +61,8 @@ fork does not receive.
 A PR from a branch `agent/<N>-…` carries exactly one `Bastionhub-Issue: #N` line; a dispatched run
 also requires a `Bastionhub-Agent` line naming a configured lane. `validate` of
 `bastionhub-ci.yml` checks both. `bastionhub-pm.yml` moves issue N on the board from that line.
-`autonomy: gated`: every merge is left to a person.
+`autonomy: tiered`: the merge queue merges an approved PR, except that the merge of a complex or
+exceptional ticket's PR is left to a person.
 
 A change to the CLI grammar, the `endpoints.yaml` schema, a deploy artifact identifier or a far-end
 `serve` route is a contract change (`CLAUDE.md`, Contract surface) and is recorded in
