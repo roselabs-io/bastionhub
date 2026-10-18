@@ -8,14 +8,21 @@ import (
 )
 
 // runPrincipalToACL runs deploy/bastion/principal-to-acl.sh against mapFile
-// and returns its stdout and whether it exited 0.
+// and returns its stdout and whether it exited 0. A `logger` stub first on
+// PATH keeps the script's log lines out of the host's syslog.
 func runPrincipalToACL(t *testing.T, mapFile string) (string, bool) {
 	t.Helper()
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not found")
 	}
+	stubDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stubDir, "logger"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command("bash", "deploy/bastion/principal-to-acl.sh", "gw-passthrough", "test-key-id")
-	cmd.Env = append(os.Environ(), "PRINCIPAL_TO_ACL_MAP="+mapFile)
+	cmd.Env = append(os.Environ(),
+		"PRINCIPAL_TO_ACL_MAP="+mapFile,
+		"PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	out, err := cmd.Output()
 	if _, isExit := err.(*exec.ExitError); err != nil && !isExit {
 		t.Fatalf("running principal-to-acl: %v", err)
