@@ -1112,6 +1112,7 @@ func main() {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "bastion", Usage: "public hostname far-end devices dial for SSH (e.g. bastion.example.io)", Required: true},
 					&cli.StringFlag{Name: "listen", Usage: "address to listen on", Value: "127.0.0.1:8420"},
+					&cli.StringFlag{Name: "trusted-proxies", Usage: "comma-separated proxy CIDRs allowed to supply X-Forwarded-For (default: none)", Sources: cli.EnvVars("BASTIONHUB_TRUSTED_PROXIES")},
 					&cli.StringFlag{Name: "base-url", Usage: "public base URL of this service (default: https://<bastion>)"},
 					&cli.StringFlag{Name: "tls-cert", Usage: "TLS certificate file (serve HTTPS directly instead of behind a proxy)"},
 					&cli.StringFlag{Name: "tls-key", Usage: "TLS key file"},
