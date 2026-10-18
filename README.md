@@ -242,6 +242,7 @@ processes inherit it, which is how `sshboard` works when deployed there.
 | `--bastion <host>` | required — the hostname far ends dial for SSH |
 | `--listen <addr>` | `127.0.0.1:8420` |
 | `--base-url <url>` | `https://<bastion>` |
+| `--trusted-proxies <CIDRs>` / `$BASTIONHUB_TRUSTED_PROXIES` | empty — no proxies trusted |
 | `--tls-cert`, `--tls-key` | unset |
 
 When an invite is claimed, `serve` records the endpoint in its own
@@ -258,6 +259,28 @@ Invite codes are 8 characters drawn from a 31-symbol alphabet excluding `0`,
 `O`, `1`, `I` and `L`. They are single-use and expire after `--ttl` (default 30
 minutes). Unknown, expired, spent and revoked codes return identical responses.
 Repeated failed lookups from one address are rate-limited.
+
+#### Invite attempt limits behind a proxy
+
+`--trusted-proxies` accepts comma-separated IPv4 or IPv6 CIDRs. The flag
+overrides `BASTIONHUB_TRUSTED_PROXIES`. Invalid entries stop startup.
+The default empty list keys failed invite lookups on the connection's source
+address and ignores `X-Forwarded-For`.
+
+For a connection from a trusted CIDR, `serve` uses the rightmost IP address in
+`X-Forwarded-For`, including across repeated header fields. Earlier entries
+are ignored. A missing or invalid rightmost address falls back to the
+connection's source address. Proxies in the list must set or append the
+connecting client's IP as the last entry.
+
+The containerised edge Caddy in `roselabs-io/hetzner-vps` uses
+`X-Forwarded-For` and the `172.19.0.0/16` edge network. Set
+`BASTIONHUB_TRUSTED_PROXIES=172.19.0.0/16` for that deployment, or pass
+`--trusted-proxies 172.19.0.0/16`. Every peer in a configured CIDR is trusted;
+restrict it to proxy addresses or a network reserved for trusted proxies.
+
+Blocked invite lookups return `429` with `Retry-After: 1800` (seconds), a
+conservative wait covering the full 30-minute attempt window.
 
 ## Stability promises
 

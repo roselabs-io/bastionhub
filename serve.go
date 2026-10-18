@@ -358,11 +358,12 @@ func normalizeCode(s string) string {
 // -----------------------------------------------------------------------------
 
 type server struct {
-	store      *inviteStore
-	adminToken string
-	bastion    string // public hostname the far end dials for SSH
-	baseURL    string // public base URL of this service, for the bootstrap line
-	now        func() time.Time
+	store          *inviteStore
+	trustedProxies []*net.IPNet
+	adminToken     string
+	bastion        string // public hostname the far end dials for SSH
+	baseURL        string // public base URL of this service, for the bootstrap line
+	now            func() time.Time
 }
 
 func (s *server) clock() time.Time {
@@ -393,10 +394,21 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
-func sourceAddr(r *http.Request) string {
+func (s *server) sourceAddr(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
+	}
+	peer := net.ParseIP(host)
+	for _, network := range s.trustedProxies {
+		if network.Contains(peer) {
+			forwarded := strings.Join(r.Header.Values("X-Forwarded-For"), ",")
+			client := net.ParseIP(strings.TrimSpace(forwarded[strings.LastIndex(forwarded, ",")+1:]))
+			if client != nil {
+				return client.String()
+			}
+			break
+		}
 	}
 	return host
 }
@@ -405,14 +417,16 @@ func sourceAddr(r *http.Request) string {
 // failure mode returns the same 404 and the same message: an attacker probing
 // codes must not learn whether a code exists, is expired, or is already spent.
 func (s *server) lookupForFarEnd(w http.ResponseWriter, r *http.Request, code string) *Invite {
-	addr := sourceAddr(r)
+	addr := s.sourceAddr(r)
 	if s.store.blocked(addr) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(attemptWindowSize/time.Second)))
 		writeErr(w, http.StatusTooManyRequests, "too many attempts; wait and ask the operator for a fresh code")
 		return nil
 	}
 	inv := s.store.get(normalizeCode(code))
 	if inv == nil || inv.expired(s.clock()) || inv.claimed() {
 		if s.store.recordAttempt(addr) {
+			w.Header().Set("Retry-After", strconv.Itoa(int(attemptWindowSize/time.Second)))
 			writeErr(w, http.StatusTooManyRequests, "too many attempts; wait and ask the operator for a fresh code")
 			return nil
 		}
@@ -1264,10 +1278,29 @@ func loadOrCreateAdminToken(path string) (string, bool, error) {
 	return tok, true, nil
 }
 
+func parseTrustedProxies(value string) ([]*net.IPNet, error) {
+	var networks []*net.IPNet
+	if strings.TrimSpace(value) == "" {
+		return networks, nil
+	}
+	for _, entry := range strings.Split(value, ",") {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(entry))
+		if err != nil {
+			return nil, fmt.Errorf("invalid trusted proxy CIDR %q: %w", entry, err)
+		}
+		networks = append(networks, network)
+	}
+	return networks, nil
+}
+
 func serveCmd(ctx context.Context, cmd *cli.Command) error {
 	bastion := cmd.String("bastion")
 	if bastion == "" {
 		return cli.Exit("--bastion is required: the public hostname far-end devices dial for SSH (e.g. bastion.example.io)", 1)
+	}
+	trustedProxies, err := parseTrustedProxies(cmd.String("trusted-proxies"))
+	if err != nil {
+		return cli.Exit(err.Error(), 1)
 	}
 	listen := cmd.String("listen")
 	baseURL := cmd.String("base-url")
@@ -1285,7 +1318,7 @@ func serveCmd(ctx context.Context, cmd *cli.Command) error {
 		return cli.Exit(err.Error(), 1)
 	}
 
-	srv := &server{store: store, adminToken: token, bastion: bastion, baseURL: baseURL}
+	srv := &server{store: store, trustedProxies: trustedProxies, adminToken: token, bastion: bastion, baseURL: baseURL}
 
 	httpSrv := &http.Server{
 		Addr:              listen,
