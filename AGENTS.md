@@ -35,7 +35,7 @@ A merge into `main` deploys nothing. A release is a `v*` tag; the Homebrew formu
 
 | Recipe | Runs |
 |---|---|
-| `just check` | `go vet ./...`; fails when `gofmt -l .` lists a file |
+| `just check` | fails when `gofmt -l .` lists a file, and prints the files; `go vet ./...` for linux, darwin and windows on amd64 and arm64 |
 | `just test` | `go test ./...` |
 | `just build` | `go build` with `CGO_ENABLED=0` for linux, darwin and windows on amd64 and arm64, into a temporary directory |
 | `just gate` | `check`, `test`, `build`; the deterministic gate CI runs |
@@ -45,8 +45,8 @@ A merge into `main` deploys nothing. A release is a `v*` tag; the Homebrew formu
 `up`, `down` and `logs` are not applicable (`checks.recipes.not_applicable` of `pipeline.yaml`):
 there is no local stack. `just` and Go are required.
 
-`go vet` in the gate runs for the host target only; `ci.yml` vets each of the six targets. The gate
-does not scan for secrets and there is no `audit` recipe (bastionhub#2).
+`just gate` runs the checks of `ci.yml` plus the format check; `ci.yml` runs `go test` on
+linux/amd64 only, the gate on the host. The gate does not scan for secrets and there is no `audit` recipe (bastionhub#2).
 
 ## CI
 
