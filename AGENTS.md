@@ -22,14 +22,16 @@ systemd unit `bastionhub-serve.service`.
 | `deploy/bastion/` | sshd drop-ins and `principal-to-acl.sh` installed on the bastion; `README.md` describes them |
 | `README.md`, `CHANGELOG.md`, `CLAUDE.md` | usage, release notes, contributor notes |
 | `.github/workflows/ci.yml` | `go vet` and `go build` for six targets, `go test` on linux/amd64 |
-| `.github/workflows/release.yml` | on a `v*` tag: builds six targets, archives, `checksums.txt`, a GitHub Release |
+| `.github/workflows/release.yml` | on a `v*` tag: builds six targets, archives, `checksums.txt`, a GitHub Release, then a `formula-update` event to `roselabs-io/homebrew-tools` |
 | `.github/workflows/bastionhub-ci.yml` | `validate` (PR metadata) and `gate` (`just gate`) |
 | `.github/workflows/bastionhub-pm.yml` | the issue and board sync of Governor |
 | `pipeline.yaml` | the Governor dispatcher's config for this repository |
 | `tools/local_preflight.py` | the local check the dispatcher runs: `just check`, then `just gate` |
 
-A merge into `main` deploys nothing. A release is a `v*` tag; the Homebrew formula in
-`roselabs-io/homebrew-tools` is updated by hand (bastionhub#4).
+A merge into `main` deploys nothing. A release is a `v*` tag. After the GitHub Release, the
+`homebrew` job of `release.yml` sends a `repository_dispatch` event (`formula-update`, payload
+`tool` and `tag`) to `roselabs-io/homebrew-tools`, whose workflow updates the formula. The job uses
+the secret `HOMEBREW_TAP_TOKEN` and does not run for a tag containing `-` (a prerelease).
 
 ## Commands
 
