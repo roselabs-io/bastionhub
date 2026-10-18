@@ -24,6 +24,8 @@ systemd unit `bastionhub-serve.service`.
 | `.github/workflows/ci.yml` | `go vet` and `go build` for six targets, `go test` on linux/amd64 |
 | `.github/workflows/release.yml` | on a `v*` tag: builds six targets, archives, `checksums.txt`, a GitHub Release |
 | `.github/workflows/bastionhub-ci.yml` | `validate` (PR metadata) and `gate` (`just gate`) |
+| `.github/workflows/audit.yml` | `just audit` on a change to `go.mod` or `go.sum`, and weekly on `main` |
+| `.secrets.baseline` | the detect-secrets baseline `just secrets` reads: findings that are not secrets |
 | `.github/workflows/bastionhub-pm.yml` | the issue and board sync of Governor |
 | `pipeline.yaml` | the Governor dispatcher's config for this repository |
 | `tools/local_preflight.py` | the local check the dispatcher runs: `just check`, then `just gate` |
@@ -36,17 +38,27 @@ A merge into `main` deploys nothing. A release is a `v*` tag; the Homebrew formu
 | Recipe | Runs |
 |---|---|
 | `just check` | fails when `gofmt -l .` lists a file, and prints the files; `go vet ./...` for linux, darwin and windows on amd64 and arm64 |
+| `just secrets` | scans every file of `git ls-files` with detect-secrets 1.5.0 against `.secrets.baseline`, offline; a finding the baseline does not hold fails |
 | `just test` | `go test ./...` |
 | `just build` | `go build` with `CGO_ENABLED=0` for linux, darwin and windows on amd64 and arm64, into a temporary directory |
-| `just gate` | `check`, `test`, `build`; the deterministic gate CI runs |
+| `just gate` | `check`, `secrets`, `test`, `build`; the deterministic gate CI runs |
+| `just audit` | `go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...`; needs the network, not part of the gate |
 | `just fix` | `gofmt -w .` |
 | `just ff` | switches to `main` and fast-forwards it from `origin`; refuses local changes or a diverged `main` |
 
 `up`, `down` and `logs` are not applicable (`checks.recipes.not_applicable` of `pipeline.yaml`):
-there is no local stack. `just` and Go are required.
+there is no local stack. `just`, Go and uv are required; uv runs detect-secrets for `just secrets`.
+On the first run, `just secrets` downloads detect-secrets and `just audit` downloads govulncheck.
 
-`just gate` runs the checks of `ci.yml` plus the format check; `ci.yml` runs `go test` on
-linux/amd64 only, the gate on the host. The gate does not scan for secrets and there is no `audit` recipe (bastionhub#2).
+`just gate` runs the checks of `ci.yml` plus the format check and the secret scan; `ci.yml` runs
+`go test` on linux/amd64 only, the gate on the host.
+
+The secret scan compares findings with the baseline by file, hash and type, not by line, and does not
+rewrite the baseline. It finds what detect-secrets' patterns and entropy rules find; untracked files
+and Git history are not scanned. To accept a finding that is not a secret, or to refresh the
+baseline's line numbers, run
+`uvx --from detect-secrets==1.5.0 detect-secrets scan --no-verify --baseline .secrets.baseline` and
+review the diff. An `audit` finding is triaged like a review finding (Finding triage).
 
 ## CI
 
