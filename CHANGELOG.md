@@ -8,6 +8,7 @@ Format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `bastionhub serve --trusted-proxies` (`BASTIONHUB_TRUSTED_PROXIES`): comma-separated proxy CIDRs, empty by default. Failed invite lookups use the rightmost `X-Forwarded-For` address only for trusted peers. Blocked lookups include `Retry-After: 1800`.
 - `bastionhub bastion verify` — checks the bastion over SSH (`admin_alias`) and prints PASS or FAIL per check: the `10-bastionhub.conf` and `30-passthrough-acl.conf` drop-ins exist; the `gw-tunnel`, `gw-user` and `gw-passthrough` accounts exist; the `TrustedUserCAKeys` file lists the local `sshca` user CA; the `RevokedKeys` KRL is readable. Exits 1 when a check fails.
 
 ## [0.2.0] — 2026-08-23
