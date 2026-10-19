@@ -3,7 +3,10 @@
 # Builds the 6-platform release matrix, packages each as a
 # .tar.gz (Unix) or .zip (Windows), generates a sha256 checksums
 # manifest, and attaches everything to a GitHub Release with
-# auto-generated release notes.
+# auto-generated release notes. A final job sends a
+# repository_dispatch event (formula-update, with the tool and the
+# tag) to roselabs-io/homebrew-tools, whose workflow updates
+# Formula/bastionhub.rb. Prerelease tags (containing '-') send none.
 #
 # Version is injected via -ldflags so `bastionhub --version` reports
 # the actual git tag rather than the source-default "0.1.0-dev".
@@ -100,3 +103,20 @@ jobs:
           fail_on_unmatched_files: true
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+  homebrew:
+    name: Notify homebrew-tools
+    needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    steps:
+      # GITHUB_TOKEN cannot write to another repository; HOMEBREW_TAP_TOKEN
+      # needs Contents write on roselabs-io/homebrew-tools.
+      - name: Send formula-update event
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          gh api repos/roselabs-io/homebrew-tools/dispatches \
+            -f event_type=formula-update \
+            -f "client_payload[tool]=bastionhub" \
+            -f "client_payload[tag]=${GITHUB_REF_NAME}"
