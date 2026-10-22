@@ -26,7 +26,7 @@ systemd unit `bastionhub-serve.service`.
 | `.github/workflows/bastionhub-ci.yml` | `validate` (PR metadata) and `gate` (`just gate`) |
 | `.github/workflows/bastionhub-pm.yml` | the issue and board sync of Governor |
 | `pipeline.yaml` | the Governor dispatcher's config for this repository |
-| `tools/local_preflight.py` | the local check the dispatcher runs: `just check`, then `just gate` |
+| Governor's package preflight (`tools/local_preflight.py` of the Governor package, run by the dispatcher; this repository keeps no copy) | the local check the dispatcher runs: `just check`, then `just gate` |
 
 A merge into `main` deploys nothing. A release is a `v*` tag. After the GitHub Release, the
 `homebrew` job of `release.yml` sends a `repository_dispatch` event (`formula-update`, payload
