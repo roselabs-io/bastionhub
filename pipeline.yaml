@@ -48,3 +48,6 @@ tickets:
       name: Work type
       options: [Epic, Feature, Experiment, Bug, Research, Task]
       colors: [PURPLE, BLUE, GREEN, RED, YELLOW, GRAY]
+
+# The package preflight uses its defaults: `just check` and tests selected from the diff.
+preflight: {}
