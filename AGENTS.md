@@ -43,7 +43,7 @@ When the tag exists, nothing is released. A tag pushed with `GITHUB_TOKEN` start
 is why `release.yml` is called rather than triggered. A heading with a `-` suffix
 (`## [1.0.0-rc.1]`) does not match, so CI makes no prerelease; a prerelease is a `v*-*` tag pushed
 by a person, which runs `release.yml` through its `push: tags` trigger. Runs of `bastionhub-ci.yml`
-on `main` are not cancelled by a later push; a run still pending when another push to `main` queues
+for a push to `main` are not cancelled by a later push; a run still pending when another push to `main` queues
 is replaced, and the newer run tags its own commit when the tag does not exist.
 
 After the GitHub Release, the `homebrew` job of `release.yml` sends a `repository_dispatch` event

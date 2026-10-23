@@ -16,8 +16,9 @@ run-name: "${{ inputs.pr_number && format('bastionhub CI PR #{0} {1}', inputs.pr
 # On a push to `main`, `tag` runs after `gate`: it reads the newest `## [X.Y.Z]` heading of
 # CHANGELOG.md (a heading with a `-` suffix and `[Unreleased]` do not match) and, when the tag
 # `vX.Y.Z` does not exist on origin, pushes it on the pushed commit with GITHUB_TOKEN. `release`
-# then calls release.yml with that tag. Runs on `main` are not cancelled by a later push, so a
-# release that has pushed its tag finishes.
+# then calls release.yml with that tag. A run of a push to `main` is not cancelled by a later push,
+# so a release that has pushed its tag finishes; a dispatched run (also on `main`) is cancelled by a
+# later dispatch for the same PR.
 
 on:
   pull_request:
@@ -38,7 +39,7 @@ on:
 
 concurrency:
   group: bastionhub-ci-${{ inputs.pr_number || github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
