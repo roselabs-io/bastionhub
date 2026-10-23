@@ -1,4 +1,8 @@
-# Release — triggered by pushing a tag matching v*.
+# Release — triggered by pushing a tag matching v*, or called by the
+# `release` job of bastionhub-ci.yml with the tag as the `tag` input
+# after that job's `tag` job has pushed the tag. A tag pushed with
+# GITHUB_TOKEN starts no workflow, so the push trigger does not fire
+# for it. TAG is the `tag` input, else github.ref_name (the pushed tag).
 #
 # Builds the 6-platform release matrix, packages each as a
 # .tar.gz (Unix) or .zip (Windows), generates a sha256 checksums
@@ -16,6 +20,18 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing tag to release (vX.Y.Z)
+        required: true
+        type: string
+    secrets:
+      HOMEBREW_TAP_TOKEN:
+        required: true
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 permissions:
   contents: write  # required to create the GitHub Release
@@ -36,6 +52,8 @@ jobs:
           - { goos: windows, goarch: arm64, ext: .exe }
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
 
       - uses: actions/setup-go@v5
         with:
@@ -50,14 +68,14 @@ jobs:
         run: |
           mkdir -p dist
           go build \
-            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+            -ldflags "-s -w -X main.version=${TAG}" \
             -trimpath \
             -o dist/bastionhub${{ matrix.ext }} .
 
       - name: Package
         run: |
           cd dist
-          archive_base="bastionhub-${GITHUB_REF_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          archive_base="bastionhub-${TAG}-${{ matrix.goos }}-${{ matrix.goarch }}"
           if [ "${{ matrix.goos }}" = "windows" ]; then
             zip "../${archive_base}.zip" bastionhub.exe
           else
@@ -78,6 +96,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -95,6 +115,7 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.TAG }}
           files: |
             dist/bastionhub-*-*.tar.gz
             dist/bastionhub-*-*.zip
@@ -102,12 +123,13 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(env.TAG, '-') }}
 
   homebrew:
     name: Notify homebrew-tools
     needs: release
-    if: ${{ !contains(github.ref_name, '-') }}
+    # The env context is not available in a job-level `if`.
+    if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
     runs-on: ubuntu-latest
     steps:
       # GITHUB_TOKEN cannot write to another repository; HOMEBREW_TAP_TOKEN
@@ -119,4 +141,4 @@ jobs:
           gh api repos/roselabs-io/homebrew-tools/dispatches \
             -f event_type=formula-update \
             -f "client_payload[tool]=bastionhub" \
-            -f "client_payload[tag]=${GITHUB_REF_NAME}"
+            -f "client_payload[tag]=${TAG}"
