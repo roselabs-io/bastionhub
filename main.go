@@ -284,6 +284,164 @@ func statusCmd(_ context.Context, _ *cli.Command) error {
 	return nil
 }
 
+// verifyRemoteScript runs on the bastion as admin_alias. Each line it prints
+// is "<kind> <subject> <result>", or "ca <key line>" for each line of the
+// TrustedUserCAKeys file. The echo after the CA lines ends a last line that
+// has no newline, so the KRL record starts a line of its own. The CA and KRL
+// paths come from `sshd -T`, so the effective configuration is checked rather
+// than the installer's defaults.
+const verifyRemoteScript = `d=/etc/ssh/sshd_config.d
+for f in 10-bastionhub.conf 30-passthrough-acl.conf; do
+  if [ -f "$d/$f" ]; then echo "dropin $f ok"; else echo "dropin $f missing"; fi
+done
+for u in gw-tunnel gw-user gw-passthrough; do
+  if id "$u" >/dev/null 2>&1; then echo "user $u ok"; else echo "user $u missing"; fi
+done
+cfg=$(sshd -T 2>/dev/null)
+ca=$(printf '%s\n' "$cfg" | awk '$1 == "trustedusercakeys" {print $2}')
+krl=$(printf '%s\n' "$cfg" | awk '$1 == "revokedkeys" {print $2}')
+echo "cafile ${ca:-none}"
+if [ -n "$ca" ] && [ "$ca" != none ]; then sed 's/^/ca /' "$ca" 2>/dev/null; echo; fi
+if [ -n "$krl" ] && [ "$krl" != none ] && cat "$krl" >/dev/null 2>&1; then
+  echo "krl $krl ok"
+else
+  echo "krl ${krl:-none} unreadable"
+fi
+`
+
+type verifyCheck struct {
+	name   string
+	ok     bool
+	detail string
+}
+
+// parseUserCA returns "<type> <base64>" of the user CA from `sshca ca show`.
+func parseUserCA(show string) (string, error) {
+	for _, line := range strings.Split(show, "\n") {
+		if rest, ok := strings.CutPrefix(line, "user CA"); ok {
+			f := strings.Fields(rest)
+			if len(f) >= 2 {
+				return f[0] + " " + f[1], nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no user CA in `sshca ca show` output")
+}
+
+// evaluateVerify turns the output of verifyRemoteScript into checks, in a
+// fixed order. A check the script did not report fails. localCA is the
+// "<type> <base64>" of the local user CA; caErr is why it could not be read.
+func evaluateVerify(remote, localCA string, caErr error) []verifyCheck {
+	results := map[string]string{}
+	var caFile string
+	var caKeys []string
+	for _, line := range strings.Split(remote, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		switch {
+		case f[0] == "ca":
+			if len(f) >= 3 && !strings.HasPrefix(f[1], "#") {
+				caKeys = append(caKeys, f[1]+" "+f[2])
+			}
+		case f[0] == "cafile" && len(f) == 2:
+			caFile = f[1]
+		case len(f) == 3:
+			results[f[0]+" "+f[1]] = f[2]
+		}
+	}
+
+	var checks []verifyCheck
+	for _, name := range []string{"10-bastionhub.conf", "30-passthrough-acl.conf"} {
+		got, ok := results["dropin "+name]
+		checks = append(checks, verifyCheck{"sshd drop-in " + name, got == "ok", reported(ok, "not in /etc/ssh/sshd_config.d")})
+	}
+	for _, u := range []string{"gw-tunnel", "gw-user", "gw-passthrough"} {
+		got, ok := results["user "+u]
+		checks = append(checks, verifyCheck{"account " + u, got == "ok", reported(ok, "no such user")})
+	}
+
+	ca := verifyCheck{name: "TrustedUserCAKeys matches the local sshca user CA"}
+	switch {
+	case caErr != nil:
+		ca.detail = caErr.Error()
+	case caFile == "" || caFile == "none":
+		ca.detail = "sshd -T reports no TrustedUserCAKeys"
+	default:
+		ca.name = fmt.Sprintf("TrustedUserCAKeys (%s) matches the local sshca user CA", caFile)
+		for _, k := range caKeys {
+			if k == localCA {
+				ca.ok = true
+			}
+		}
+		if !ca.ok {
+			ca.detail = "local user CA " + localCA + " is not listed"
+		}
+	}
+	checks = append(checks, ca)
+
+	krl := verifyCheck{name: "KRL readable", detail: "not reported"}
+	for key, got := range results {
+		if path, ok := strings.CutPrefix(key, "krl "); ok {
+			krl.name = fmt.Sprintf("KRL (%s) readable", path)
+			krl.ok = got == "ok"
+			krl.detail = ""
+			if path == "none" {
+				krl.detail = "sshd -T reports no RevokedKeys"
+			} else if !krl.ok {
+				krl.detail = "cannot read the file"
+			}
+		}
+	}
+	return append(checks, krl)
+}
+
+func reported(ok bool, failDetail string) string {
+	if !ok {
+		return "not reported"
+	}
+	return failDetail
+}
+
+func bastionVerifyCmd(_ context.Context, _ *cli.Command) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return cli.Exit(err.Error(), 1)
+	}
+	remote, err := exec.Command("ssh",
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=5",
+		cfg.AdminAlias,
+		verifyRemoteScript,
+	).Output()
+	if err != nil {
+		return cli.Exit(fmt.Sprintf("verify query to %s failed: %v", cfg.AdminAlias, err), 1)
+	}
+	var localCA string
+	show, caErr := exec.Command("sshca", "ca", "show").Output()
+	if caErr != nil {
+		caErr = fmt.Errorf("sshca ca show: %v", caErr)
+	} else {
+		localCA, caErr = parseUserCA(string(show))
+	}
+
+	fmt.Printf("Verifying %s\n\n", cfg.AdminAlias)
+	failed := 0
+	for _, c := range evaluateVerify(string(remote), localCA, caErr) {
+		if c.ok {
+			fmt.Printf("PASS  %s\n", c.name)
+			continue
+		}
+		failed++
+		fmt.Printf("FAIL  %s: %s\n", c.name, c.detail)
+	}
+	if failed > 0 {
+		return cli.Exit(fmt.Sprintf("\n%d check(s) failed", failed), 1)
+	}
+	return nil
+}
+
 func initCmd(_ context.Context, _ *cli.Command) error {
 	path := configPath()
 	if _, err := os.Stat(path); err == nil {
@@ -900,6 +1058,23 @@ func main() {
 				Action: statusCmd,
 			},
 			{
+				Name:  "bastion",
+				Usage: "inspect the bastion",
+				Commands: []*cli.Command{
+					{
+						Name:  "verify",
+						Usage: "[engineer-side] check the bastion's sshd drop-ins, role accounts, CA trust and KRL",
+						Description: "Connects to admin_alias over SSH and prints PASS or FAIL for each check:\n" +
+							"the sshd drop-ins 10-bastionhub.conf and 30-passthrough-acl.conf exist; the\n" +
+							"gw-tunnel, gw-user and gw-passthrough accounts exist; the TrustedUserCAKeys file\n" +
+							"lists the user CA that `sshca ca show` prints locally; the RevokedKeys file is\n" +
+							"readable. Exits 1 when a check fails or the bastion cannot be reached. Changes\n" +
+							"nothing on the bastion.",
+						Action: bastionVerifyCmd,
+					},
+				},
+			},
+			{
 				Name:   "init",
 				Usage:  "create a starter endpoints.yaml at ~/.config/bastionhub/",
 				Action: initCmd,
@@ -937,6 +1112,7 @@ func main() {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "bastion", Usage: "public hostname far-end devices dial for SSH (e.g. bastion.example.io)", Required: true},
 					&cli.StringFlag{Name: "listen", Usage: "address to listen on", Value: "127.0.0.1:8420"},
+					&cli.StringFlag{Name: "trusted-proxies", Usage: "comma-separated proxy CIDRs allowed to supply X-Forwarded-For (default: none)", Sources: cli.EnvVars("BASTIONHUB_TRUSTED_PROXIES")},
 					&cli.StringFlag{Name: "base-url", Usage: "public base URL of this service (default: https://<bastion>)"},
 					&cli.StringFlag{Name: "tls-cert", Usage: "TLS certificate file (serve HTTPS directly instead of behind a proxy)"},
 					&cli.StringFlag{Name: "tls-key", Usage: "TLS key file"},

@@ -431,14 +431,89 @@ func firstLineContaining(s, sub string) string {
 // -----------------------------------------------------------------------------
 
 func TestCodeGuessingIsRateLimited(t *testing.T) {
-	s := newTestServer(t)
-	var lastCode int
-	for i := 0; i < maxCodeAttempts+5; i++ {
-		w := s.req(t, http.MethodGet, "/j/ZZZZZZZZ", "", "")
-		lastCode = w.Code
+	for _, tc := range []struct {
+		name          string
+		proxies       string
+		remote        string
+		first, second []string
+		secondStatus  int
+	}{
+		{"trusted proxy separates clients", "172.19.0.0/16", "172.19.0.2:54321", []string{"198.51.100.1"}, []string{"198.51.100.2"}, http.StatusOK},
+		{"default ignores forwarded addresses", "", "172.19.0.2:54321", []string{"198.51.100.1"}, []string{"198.51.100.2"}, http.StatusTooManyRequests},
+		{"untrusted peer ignores forwarded addresses", "127.0.0.1/32", "172.19.0.2:54321", []string{"198.51.100.1"}, []string{"198.51.100.2"}, http.StatusTooManyRequests},
+		{"rightmost entry identifies client", "172.19.0.0/16", "172.19.0.2:54321", []string{"192.0.2.99, 198.51.100.1"}, []string{"192.0.2.99, 198.51.100.2"}, http.StatusOK},
+		{"last header field identifies client", "172.19.0.0/16", "172.19.0.2:54321", []string{"192.0.2.99", "198.51.100.1"}, []string{"192.0.2.99", "198.51.100.2"}, http.StatusOK},
+		{"missing header uses peer", "172.19.0.0/16", "172.19.0.2:54321", nil, nil, http.StatusTooManyRequests},
+		{"invalid rightmost entry uses peer", "172.19.0.0/16", "172.19.0.2:54321", []string{"198.51.100.1, invalid"}, []string{"198.51.100.2, invalid"}, http.StatusTooManyRequests},
+		{"empty rightmost entry uses peer", "172.19.0.0/16", "172.19.0.2:54321", []string{"198.51.100.1,"}, []string{"198.51.100.2,"}, http.StatusTooManyRequests},
+		{"IPv6 proxy and clients", "172.19.0.0/16, 2001:db8:1::/64", "[2001:db8:1::1]:54321", []string{" 2001:db8:2::1 "}, []string{"2001:db8:2::2"}, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestServer(t)
+			code := mintInvite(t, s, "test-device", 12001)
+			var err error
+			s.trustedProxies, err = parseTrustedProxies(tc.proxies)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := func(path string, forwarded []string) *httptest.ResponseRecorder {
+				r := httptest.NewRequest(http.MethodGet, path, nil)
+				r.RemoteAddr = tc.remote
+				for _, value := range forwarded {
+					r.Header.Add("X-Forwarded-For", value)
+				}
+				w := httptest.NewRecorder()
+				s.routes().ServeHTTP(w, r)
+				if w.Code == http.StatusTooManyRequests && w.Header().Get("Retry-After") != "1800" {
+					t.Fatalf("429 Retry-After = %q, want 1800", w.Header().Get("Retry-After"))
+				}
+				return w
+			}
+			for i := 0; i < maxCodeAttempts+1; i++ {
+				w := request("/j/ZZZZZZZZ", tc.first)
+				want := http.StatusNotFound
+				if i == maxCodeAttempts {
+					want = http.StatusTooManyRequests
+				}
+				if w.Code != want {
+					t.Fatalf("attempt %d: status = %d, want %d", i+1, w.Code, want)
+				}
+			}
+			w := request("/j/"+code, tc.second)
+			if w.Code != tc.secondStatus {
+				t.Fatalf("second client: status = %d, want %d", w.Code, tc.secondStatus)
+			}
+			w = request("/j/"+code, tc.first)
+			if w.Code != http.StatusTooManyRequests {
+				t.Fatalf("blocked client: status = %d, want 429", w.Code)
+			}
+		})
 	}
-	if lastCode != http.StatusTooManyRequests {
-		t.Fatalf("after %d bad guesses, status = %d, want 429", maxCodeAttempts+5, lastCode)
+}
+
+func TestParseTrustedProxies(t *testing.T) {
+	for _, tc := range []struct {
+		value   string
+		count   int
+		invalid bool
+	}{
+		{"", 0, false},
+		{"  ", 0, false},
+		{"172.19.0.0/16, ::1/128", 2, false},
+		{"172.19.0.2", 0, true},
+		{"proxy.example.com", 0, true},
+		{"172.19.0.0/33", 0, true},
+		{"172.19.0.0/16,", 0, true},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			networks, err := parseTrustedProxies(tc.value)
+			if (err != nil) != tc.invalid {
+				t.Fatalf("error = %v, invalid = %v", err, tc.invalid)
+			}
+			if len(networks) != tc.count {
+				t.Fatalf("got %d networks, want %d", len(networks), tc.count)
+			}
+		})
 	}
 }
 

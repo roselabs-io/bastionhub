@@ -22,17 +22,19 @@ systemd unit `bastionhub-serve.service`.
 | `deploy/bastion/` | sshd drop-ins and `principal-to-acl.sh` installed on the bastion; `README.md` describes them |
 | `README.md`, `CHANGELOG.md`, `CLAUDE.md` | usage, release notes, contributor notes |
 | `.github/workflows/ci.yml` | `go vet` and `go build` for six targets, `go test` on linux/amd64 |
-| `.github/workflows/release.yml` | on a `v*` tag: builds six targets, archives, `checksums.txt`, a GitHub Release |
+| `.github/workflows/release.yml` | on a `v*` tag: builds six targets, archives, `checksums.txt`, a GitHub Release, then a `formula-update` event to `roselabs-io/homebrew-tools` |
 | `.github/workflows/bastionhub-ci.yml` | `validate` (PR metadata) and `gate` (`just gate`) |
 | `.github/workflows/audit.yml` | `just audit` on a change to `go.mod` or `go.sum`, and weekly on `main` |
 | `.secrets.baseline` | the detect-secrets baseline `just secrets` reads: findings that are not secrets |
 | `.github/workflows/bastionhub-pm.yml` | the issue and board sync of Governor |
 | `pipeline.yaml` | the Governor dispatcher's config for this repository |
-| `tools/local_preflight.py` | the local check the dispatcher runs: `just secrets-prepare`, `just check`, then `just gate` |
 | `tools/secret_scan.py` | the secret scan `just secrets` runs |
+| Governor's package preflight (`tools/local_preflight.py` of the Governor package, run by the dispatcher; this repository keeps no copy) | the local check the dispatcher runs: `just check`, then `just gate` |
 
-A merge into `main` deploys nothing. A release is a `v*` tag; the Homebrew formula in
-`roselabs-io/homebrew-tools` is updated by hand (bastionhub#4).
+A merge into `main` deploys nothing. A release is a `v*` tag. After the GitHub Release, the
+`homebrew` job of `release.yml` sends a `repository_dispatch` event (`formula-update`, payload
+`tool` and `tag`) to `roselabs-io/homebrew-tools`, whose workflow updates the formula. The job uses
+the secret `HOMEBREW_TAP_TOKEN` and does not run for a tag containing `-` (a prerelease).
 
 ## Commands
 
@@ -52,7 +54,8 @@ A merge into `main` deploys nothing. A release is a `v*` tag; the Homebrew formu
 `up`, `down` and `logs` are not applicable (`checks.recipes.not_applicable` of `pipeline.yaml`):
 there is no local stack. `just`, Go and uv are required; uv runs detect-secrets for `just secrets`.
 `just secrets` runs uv offline and fails until `just secrets-prepare` has installed detect-secrets;
-CI and `tools/local_preflight.py` run `just secrets-prepare` before the gate. On the first run,
+CI runs `just secrets-prepare` before the gate. Governor's package preflight does not run it; on a
+machine that runs the preflight, run `just secrets-prepare` once before `just gate`. On the first run,
 `just audit` downloads govulncheck.
 
 `just gate` runs the checks of `ci.yml` plus the format check and the secret scan; `ci.yml` runs
@@ -77,7 +80,8 @@ fork does not receive.
 A PR from a branch `agent/<N>-…` carries exactly one `Bastionhub-Issue: #N` line; a dispatched run
 also requires a `Bastionhub-Agent` line naming a configured lane. `validate` of
 `bastionhub-ci.yml` checks both. `bastionhub-pm.yml` moves issue N on the board from that line.
-`autonomy: gated`: every merge is left to a person.
+`autonomy: tiered`: the merge queue merges an approved PR, except that the merge of a complex or
+exceptional ticket's PR is left to a person.
 
 A change to the CLI grammar, the `endpoints.yaml` schema, a deploy artifact identifier or a far-end
 `serve` route is a contract change (`CLAUDE.md`, Contract surface) and is recorded in

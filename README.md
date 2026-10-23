@@ -55,7 +55,7 @@ Download from [GitHub Releases](https://github.com/roselabs-io/bastionhub/releas
 
 ## Platform support
 
-| | Engineer-side (`list` / `status` / `ssh` / `invite` / `endpoint register/enroll/unregister`) | Endpoint-side (`endpoint install` / `setup`) | Far end via `invite` |
+| | Engineer-side (`list` / `status` / `ssh` / `invite` / `bastion verify` / `endpoint register/enroll/unregister`) | Endpoint-side (`endpoint install` / `setup`) | Far end via `invite` |
 |---|---|---|---|
 | Linux | ✓ | ✓ (systemd + apt/dnf/yum/apk) | ✓ (systemd) |
 | macOS | ✓ | ✓ (launchd + Homebrew, per-user, no sudo) | ✓ (launchd) |
@@ -133,6 +133,30 @@ Options:
 
 The script is idempotent; re-running preserves the admin token. The URL is
 pinned to a release tag, so the file does not change between runs.
+
+### Verifying a bastion
+
+```sh
+bastionhub bastion verify
+```
+
+Connects to `admin_alias` over SSH (`BatchMode=yes`, `ConnectTimeout=5`) and
+prints `PASS` or `FAIL` for each check. It changes nothing on the bastion.
+
+| Check | Passes when |
+|---|---|
+| sshd drop-ins | `/etc/ssh/sshd_config.d/10-bastionhub.conf` and `30-passthrough-acl.conf` exist, one check each |
+| Role accounts | `gw-tunnel`, `gw-user` and `gw-passthrough` exist, one check each |
+| CA trust | the `TrustedUserCAKeys` file reported by `sshd -T` lists the user CA that `sshca ca show` prints on this machine (`$SSHCA_CA_DIR`, default `./ca`) |
+| KRL | the `RevokedKeys` file reported by `sshd -T` is readable |
+
+Exit code 0 when every check passes; 1 when a check fails, the bastion cannot
+be reached, or `endpoints.yaml` is missing.
+
+`sshd -T` and the KRL need root, so `admin_alias` must log in as root.
+`install.sh` does not install `30-passthrough-acl.conf`, so that check fails on
+a bastion set up by the installer alone until Step 2 of
+[`deploy/bastion/README.md`](deploy/bastion/README.md) is done.
 
 ## Enrollment
 
@@ -218,6 +242,7 @@ processes inherit it, which is how `sshboard` works when deployed there.
 | `--bastion <host>` | required — the hostname far ends dial for SSH |
 | `--listen <addr>` | `127.0.0.1:8420` |
 | `--base-url <url>` | `https://<bastion>` |
+| `--trusted-proxies <CIDRs>` / `$BASTIONHUB_TRUSTED_PROXIES` | empty — no proxies trusted |
 | `--tls-cert`, `--tls-key` | unset |
 
 When an invite is claimed, `serve` records the endpoint in its own
@@ -234,6 +259,28 @@ Invite codes are 8 characters drawn from a 31-symbol alphabet excluding `0`,
 `O`, `1`, `I` and `L`. They are single-use and expire after `--ttl` (default 30
 minutes). Unknown, expired, spent and revoked codes return identical responses.
 Repeated failed lookups from one address are rate-limited.
+
+#### Invite attempt limits behind a proxy
+
+`--trusted-proxies` accepts comma-separated IPv4 or IPv6 CIDRs. The flag
+overrides `BASTIONHUB_TRUSTED_PROXIES`. Invalid entries stop startup.
+The default empty list keys failed invite lookups on the connection's source
+address and ignores `X-Forwarded-For`.
+
+For a connection from a trusted CIDR, `serve` uses the rightmost IP address in
+`X-Forwarded-For`, including across repeated header fields. Earlier entries
+are ignored. A missing or invalid rightmost address falls back to the
+connection's source address. Proxies in the list must set or append the
+connecting client's IP as the last entry.
+
+The containerised edge Caddy in `roselabs-io/hetzner-vps` uses
+`X-Forwarded-For` and the `172.19.0.0/16` edge network. Set
+`BASTIONHUB_TRUSTED_PROXIES=172.19.0.0/16` for that deployment, or pass
+`--trusted-proxies 172.19.0.0/16`. Every peer in a configured CIDR is trusted;
+restrict it to proxy addresses or a network reserved for trusted proxies.
+
+Blocked invite lookups return `429` with `Retry-After: 1800` (seconds), a
+conservative wait covering the full 30-minute attempt window.
 
 ## Stability promises
 
