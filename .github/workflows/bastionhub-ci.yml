@@ -135,4 +135,4 @@ jobs:
           go-version-file: go.mod
 
       - name: Gate
-        run: just gate
+        run: GOVERNOR_JOBS="$(nproc)" just gate

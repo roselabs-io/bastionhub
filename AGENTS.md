@@ -21,12 +21,13 @@ systemd unit `bastionhub-serve.service`.
 | `deploy/install.sh` | the bastion installer for Debian and Ubuntu |
 | `deploy/bastion/` | sshd drop-ins and `principal-to-acl.sh` installed on the bastion; `README.md` describes them |
 | `README.md`, `CHANGELOG.md`, `CLAUDE.md` | usage, release notes, contributor notes |
-| `.github/workflows/ci.yml` | `go vet` and `go build` for six targets, `go test` on linux/amd64 |
+| `.github/workflows/bastionhub-audit.yml` | scheduled and lockfile-triggered `govulncheck` audit |
 | `.github/workflows/release.yml` | on a `v*` tag: builds six targets, archives, `checksums.txt`, a GitHub Release, then a `formula-update` event to `roselabs-io/homebrew-tools` |
 | `.github/workflows/bastionhub-ci.yml` | `validate` (PR metadata) and `gate` (`just gate`) |
+| `tools/secret_scan.py`, `.secrets.baseline` | offline scan of tracked files against the reviewed baseline |
 | `.github/workflows/bastionhub-pm.yml` | the issue and board sync of Governor |
 | `pipeline.yaml` | the Governor dispatcher's config for this repository |
-| Governor's package preflight (`tools/local_preflight.py` of the Governor package, run by the dispatcher; this repository keeps no copy) | the local check the dispatcher runs: `just check`, then `just gate` |
+| Governor's package preflight (`tools/local_preflight.py` of the Governor package, run by the dispatcher; this repository keeps no copy) | `just check` and selected tests of the diff; CI runs `just gate` |
 
 A merge into `main` deploys nothing. A release is a `v*` tag. After the GitHub Release, the
 `homebrew` job of `release.yml` sends a `repository_dispatch` event (`formula-update`, payload
@@ -43,13 +44,14 @@ the secret `HOMEBREW_TAP_TOKEN` and does not run for a tag containing `-` (a pre
 | `just gate` | `check`, `test`, `build`; the deterministic gate CI runs |
 | `just fix` | `gofmt -w .` |
 | `just ff` | switches to `main` and fast-forwards it from `origin`; refuses local changes or a diverged `main` |
-| `just audit` | not defined on `main`; bastionhub#2 adds it |
+| `just audit` | `govulncheck` against the Go vulnerability database; run separately from the gate |
 
 `up`, `down` and `logs` are not applicable (`checks.recipes.not_applicable` of `pipeline.yaml`):
 there is no local stack. `just` and Go are required.
 
-`just gate` runs the checks of `ci.yml` plus the format check; `ci.yml` runs `go test` on
-linux/amd64 only, the gate on the host. The gate does not scan for secrets (bastionhub#2).
+`just gate` runs `check`, `test` and `build`; `bastionhub-ci.yml` runs the gate on pull requests.
+`GOVERNOR_JOBS` sets Go's package parallelism for these recipes and defaults to `1`. The gate does
+not run network-dependent vulnerability audits.
 
 ## CI
 
