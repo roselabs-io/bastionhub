@@ -4,6 +4,9 @@ on:
   pull_request:
     branches: [main]
     paths: [go.mod, go.sum]
+  push:
+    branches: [main]
+    paths: [go.mod, go.sum]
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
