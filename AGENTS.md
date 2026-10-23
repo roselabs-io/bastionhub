@@ -24,9 +24,11 @@ systemd unit `bastionhub-serve.service`.
 | `.github/workflows/bastionhub-audit.yml` | scheduled and lockfile-triggered `govulncheck` audit |
 | `.github/workflows/release.yml` | on a `v*` tag: builds six targets, archives, `checksums.txt`, a GitHub Release, then a `formula-update` event to `roselabs-io/homebrew-tools` |
 | `.github/workflows/bastionhub-ci.yml` | `validate` (PR metadata) and `gate` (`just gate`) |
-| `tools/secret_scan.py`, `.secrets.baseline` | offline scan of tracked files against the reviewed baseline |
+| `.github/workflows/audit.yml` | `just audit` on a change to `go.mod` or `go.sum`, and weekly on `main` |
+| `.secrets.baseline` | the detect-secrets baseline `just secrets` reads: findings that are not secrets |
 | `.github/workflows/bastionhub-pm.yml` | the issue and board sync of Governor |
 | `pipeline.yaml` | the Governor dispatcher's config for this repository |
+| `tools/secret_scan.py` | the secret scan `just secrets` runs |
 | Governor's package preflight (`tools/local_preflight.py` of the Governor package, run by the dispatcher; this repository keeps no copy) | `just check` and selected tests of the diff; CI runs `just gate` |
 
 A merge into `main` deploys nothing. A release is a `v*` tag. After the GitHub Release, the
@@ -39,19 +41,33 @@ the secret `HOMEBREW_TAP_TOKEN` and does not run for a tag containing `-` (a pre
 | Recipe | Runs |
 |---|---|
 | `just check` | fails when `gofmt -l .` lists a file, and prints the files; `go vet ./...` for linux, darwin and windows on amd64 and arm64 |
+| `just secrets` | scans every file of `git ls-files` with detect-secrets 1.5.0 against `.secrets.baseline`, offline; a finding the baseline does not hold fails |
+| `just secrets update` | rewrites `.secrets.baseline` from a fresh scan, keeping the audit marks of the findings it holds |
+| `just secrets-prepare` | `uv sync --script tools/secret_scan.py`: installs the scanner `just secrets` runs; needs the network, not part of the gate |
 | `just test` | `go test ./...` |
 | `just build` | `go build` with `CGO_ENABLED=0` for linux, darwin and windows on amd64 and arm64, into a temporary directory |
-| `just gate` | `check`, `test`, `build`; the deterministic gate CI runs |
+| `just gate` | `check`, `secrets`, `test`, `build`; the deterministic gate CI runs |
+| `just audit` | `go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...`; needs the network, not part of the gate |
 | `just fix` | `gofmt -w .` |
 | `just ff` | switches to `main` and fast-forwards it from `origin`; refuses local changes or a diverged `main` |
-| `just audit` | `govulncheck` against the Go vulnerability database; run separately from the gate |
 
 `up`, `down` and `logs` are not applicable (`checks.recipes.not_applicable` of `pipeline.yaml`):
-there is no local stack. `just` and Go are required.
+there is no local stack. `just`, Go and uv are required; uv runs detect-secrets for `just secrets`.
+`just secrets` runs uv offline and fails until `just secrets-prepare` has installed detect-secrets;
+CI runs `just secrets-prepare` before the gate. Governor's package preflight does not run it; on a
+machine that runs the preflight, run `just secrets-prepare` once before `just gate`. On the first run,
+`just audit` downloads govulncheck.
 
-`just gate` runs `check`, `test` and `build`; `bastionhub-ci.yml` runs the gate on pull requests.
-`GOVERNOR_JOBS` sets Go's package parallelism for these recipes and defaults to `1`. The gate does
-not run network-dependent vulnerability audits.
+`bastionhub-ci.yml` runs `just gate` on pull requests. `GOVERNOR_JOBS` sets Go's package
+parallelism for these recipes and defaults to `1`. The gate does not run network-dependent
+vulnerability audits.
+
+The secret scan compares findings with the baseline by file, hash and type, not by line, and does not
+rewrite the baseline. It reads every tracked text file, including those detect-secrets skips by
+extension such as `go.sum`; `.secrets.baseline` itself is not scanned. It finds what detect-secrets'
+patterns and entropy rules find; untracked files and Git history are not scanned. To accept a finding
+that is not a secret, or to refresh the baseline's line numbers, run `just secrets update` and review
+the diff. `detect-secrets scan --baseline` does not record `go.sum` findings. An `audit` finding is triaged like a review finding (Finding triage).
 
 ## CI
 

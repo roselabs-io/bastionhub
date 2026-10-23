@@ -16,6 +16,16 @@ check:
         GOOS="${target%/*}" GOARCH="${target#*/}" go vet -p {{jobs}} ./...
     done
 
+# The offline secret scan, `tools/secret_scan.py`: every file of `git ls-files`, scanned with detect-secrets 1.5.0
+# against `.secrets.baseline`. A secret the baseline does not hold is printed as `path:line: type` and fails the
+# recipe. `just secrets update` rewrites the baseline. uv runs offline; `just secrets-prepare` installs the scanner.
+secrets *args:
+    uv run --offline --quiet --script tools/secret_scan.py {{args}}
+
+# Installs the scanner environment `just secrets` uses; needs the network, so it is not part of the gate.
+secrets-prepare:
+    uv sync --quiet --script tools/secret_scan.py
+
 # The test suite.
 test:
     go test -p {{jobs}} ./...
@@ -31,12 +41,12 @@ build:
         CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go build -p {{jobs}} -o "$out/bastionhub-${target%/*}-${target#*/}" .
     done
 
-# Query the Go vulnerability database for vulnerabilities reachable from this module.
-audit:
-    go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
-
 # The deterministic gate CI runs.
-gate: check test build
+gate: check secrets test build
+
+# `govulncheck` against the Go vulnerability database; needs the network, so it is not part of the gate.
+audit:
+    go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
 # Apply the formatter.
 fix:
