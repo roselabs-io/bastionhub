@@ -26,6 +26,8 @@ autonomy: full
 checks:
   recipes:
     not_applicable: {"up": "the repository has no local stack", "down": "the repository has no local stack", "logs": "the repository has no local stack"}
+  commands:
+    secrets: [uv, run, --with, detect-secrets==1.5.0, python, tools/secret_scan.py]
 
 # The three documents below name AGENTS.md; `docs.operating_model` must hold a "Finding triage" section.
 docs:
@@ -47,6 +49,5 @@ tickets:
       options: [Epic, Feature, Experiment, Bug, Research, Task]
       colors: [PURPLE, BLUE, GREEN, RED, YELLOW, GRAY]
 
-# Governor's package preflight runs every project (governor#967); an empty table takes its defaults: the cheap
-# check (`just check`) and the tests of the changed files, with CI as the verdict.
+# The package preflight uses its defaults: `just check` and tests selected from the diff.
 preflight: {}

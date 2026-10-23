@@ -141,4 +141,4 @@ jobs:
         run: just secrets-prepare
 
       - name: Gate
-        run: just gate
+        run: GOVERNOR_JOBS="$(nproc)" just gate

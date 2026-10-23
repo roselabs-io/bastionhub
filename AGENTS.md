@@ -21,15 +21,14 @@ systemd unit `bastionhub-serve.service`.
 | `deploy/install.sh` | the bastion installer for Debian and Ubuntu |
 | `deploy/bastion/` | sshd drop-ins and `principal-to-acl.sh` installed on the bastion; `README.md` describes them |
 | `README.md`, `CHANGELOG.md`, `CLAUDE.md` | usage, release notes, contributor notes |
-| `.github/workflows/ci.yml` | `go vet` and `go build` for six targets, `go test` on linux/amd64 |
+| `.github/workflows/bastionhub-audit.yml` | `just audit` on a pull request or a push to `main` that changes `go.mod` or `go.sum`, weekly on `main`, and on manual dispatch |
 | `.github/workflows/release.yml` | on a `v*` tag: builds six targets, archives, `checksums.txt`, a GitHub Release, then a `formula-update` event to `roselabs-io/homebrew-tools` |
 | `.github/workflows/bastionhub-ci.yml` | `validate` (PR metadata) and `gate` (`just gate`) |
-| `.github/workflows/audit.yml` | `just audit` on a change to `go.mod` or `go.sum`, and weekly on `main` |
 | `.secrets.baseline` | the detect-secrets baseline `just secrets` reads: findings that are not secrets |
 | `.github/workflows/bastionhub-pm.yml` | the issue and board sync of Governor |
 | `pipeline.yaml` | the Governor dispatcher's config for this repository |
 | `tools/secret_scan.py` | the secret scan `just secrets` runs |
-| Governor's package preflight (`tools/local_preflight.py` of the Governor package, run by the dispatcher; this repository keeps no copy) | the local check the dispatcher runs: `just check`, then `just gate` |
+| Governor's package preflight (`tools/local_preflight.py` of the Governor package, run by the dispatcher; this repository keeps no copy) | `just check` and selected tests of the diff; CI runs `just gate` |
 
 A merge into `main` deploys nothing. A release is a `v*` tag. After the GitHub Release, the
 `homebrew` job of `release.yml` sends a `repository_dispatch` event (`formula-update`, payload
@@ -58,8 +57,9 @@ CI runs `just secrets-prepare` before the gate. Governor's package preflight doe
 machine that runs the preflight, run `just secrets-prepare` once before `just gate`. On the first run,
 `just audit` downloads govulncheck.
 
-`just gate` runs the checks of `ci.yml` plus the format check and the secret scan; `ci.yml` runs
-`go test` on linux/amd64 only, the gate on the host.
+`bastionhub-ci.yml` runs `just gate` on pull requests. `GOVERNOR_JOBS` sets Go's package
+parallelism for these recipes and defaults to `1`. The gate does not run network-dependent
+vulnerability audits.
 
 The secret scan compares findings with the baseline by file, hash and type, not by line, and does not
 rewrite the baseline. It reads every tracked text file, including those detect-secrets skips by
