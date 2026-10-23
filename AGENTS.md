@@ -22,18 +22,38 @@ systemd unit `bastionhub-serve.service`.
 | `deploy/bastion/` | sshd drop-ins and `principal-to-acl.sh` installed on the bastion; `README.md` describes them |
 | `README.md`, `CHANGELOG.md`, `CLAUDE.md` | usage, release notes, contributor notes |
 | `.github/workflows/bastionhub-audit.yml` | `just audit` on a pull request or a push to `main` that changes `go.mod` or `go.sum`, weekly on `main`, and on manual dispatch |
-| `.github/workflows/release.yml` | on a `v*` tag: builds six targets, archives, `checksums.txt`, a GitHub Release, then a `formula-update` event to `roselabs-io/homebrew-tools` |
-| `.github/workflows/bastionhub-ci.yml` | `validate` (PR metadata) and `gate` (`just gate`) |
+| `.github/workflows/release.yml` | on a `v*` tag push, or called by `bastionhub-ci.yml` with a tag: builds six targets, archives, `checksums.txt`, a GitHub Release, then a `formula-update` event to `roselabs-io/homebrew-tools` |
+| `.github/workflows/bastionhub-ci.yml` | `validate` (PR metadata) and `gate` (`just gate`); on a push to `main`, `tag` and `release` (Releases) |
 | `.secrets.baseline` | the detect-secrets baseline `just secrets` reads: findings that are not secrets |
 | `.github/workflows/bastionhub-pm.yml` | the issue and board sync of Governor |
 | `pipeline.yaml` | the Governor dispatcher's config for this repository |
 | `tools/secret_scan.py` | the secret scan `just secrets` runs |
 | Governor's package preflight (`tools/local_preflight.py` of the Governor package, run by the dispatcher; this repository keeps no copy) | `just check` and selected tests of the diff; CI runs `just gate` |
 
-A merge into `main` deploys nothing. A release is a `v*` tag. After the GitHub Release, the
-`homebrew` job of `release.yml` sends a `repository_dispatch` event (`formula-update`, payload
-`tool` and `tag`) to `roselabs-io/homebrew-tools`, whose workflow updates the formula. The job uses
-the secret `HOMEBREW_TAP_TOKEN` and does not run for a tag containing `-` (a prerelease).
+## Releases
+
+A merge into `main` releases when it adds a version heading to `CHANGELOG.md`; it deploys nothing.
+To release, the PR renames `## [Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD` (and opens a new empty
+`## [Unreleased]` above it).
+
+On a push to `main`, after `gate` passes, the `tag` job of `bastionhub-ci.yml` reads the newest
+heading of the form `## [X.Y.Z]`. When the tag `vX.Y.Z` does not exist on `origin`, it pushes that
+tag on the pushed commit with `GITHUB_TOKEN`, and the `release` job calls `release.yml` with the tag.
+When the tag exists, nothing is released. A tag pushed with `GITHUB_TOKEN` starts no workflow, which
+is why `release.yml` is called rather than triggered. A heading with a `-` suffix
+(`## [1.0.0-rc.1]`) does not match, so CI makes no prerelease; a prerelease is a `v*-*` tag pushed
+by a person, which runs `release.yml` through its `push: tags` trigger. Runs of `bastionhub-ci.yml`
+on `main` are not cancelled by a later push; a run still pending when another push to `main` queues
+is replaced, and the newer run tags its own commit when the tag does not exist.
+
+After the GitHub Release, the `homebrew` job of `release.yml` sends a `repository_dispatch` event
+(`formula-update`, payload `tool` and `tag`) to `roselabs-io/homebrew-tools`, whose workflow updates
+the formula. The job uses the secret `HOMEBREW_TAP_TOKEN` and does not run for a tag containing `-`
+(a prerelease).
+
+A release is not deleted. A bad release is reverted on `main`, and a PR with a new patch heading
+releases `vX.Y.Z+1`. The formula is rolled back by reverting its commit in
+`roselabs-io/homebrew-tools`.
 
 ## Commands
 
@@ -57,7 +77,7 @@ CI runs `just secrets-prepare` before the gate. Governor's package preflight doe
 machine that runs the preflight, run `just secrets-prepare` once before `just gate`. On the first run,
 `just audit` downloads govulncheck.
 
-`bastionhub-ci.yml` runs `just gate` on pull requests. `GOVERNOR_JOBS` sets Go's package
+`bastionhub-ci.yml` runs `just gate` on pull requests and on pushes to `main` and `queue/**`. `GOVERNOR_JOBS` sets Go's package
 parallelism for these recipes and defaults to `1`. The gate does not run network-dependent
 vulnerability audits.
 

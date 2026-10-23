@@ -282,6 +282,15 @@ restrict it to proxy addresses or a network reserved for trusted proxies.
 Blocked invite lookups return `429` with `Retry-After: 1800` (seconds), a
 conservative wait covering the full 30-minute attempt window.
 
+## Releases
+
+A merge into `main` that adds a version heading `## [X.Y.Z] — YYYY-MM-DD` to
+[CHANGELOG.md](CHANGELOG.md) releases `vX.Y.Z`: after the gate passes, CI pushes the tag on the
+merged commit, builds the six platforms, publishes the GitHub Release and sends the formula update
+to the Homebrew tap. A merge that adds no new version heading releases nothing. To make a release,
+rename `## [Unreleased]` to the new version heading in the PR. CI does not make prereleases. The
+mechanism is described in [AGENTS.md](AGENTS.md) (Releases).
+
 ## Stability promises
 
 Pre-1.0: minor releases may break things. Breaking changes will be called out in [CHANGELOG.md](CHANGELOG.md) with the rationale.
