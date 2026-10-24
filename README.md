@@ -300,7 +300,7 @@ Pre-1.0: minor releases may break things. Breaking changes will be called out in
 Post-1.0: [SemVer](https://semver.org/). Three surfaces are versioned:
 
 - **CLI grammar** — subcommand names, flag names, exit codes
-- **`endpoints.yaml` schema** — fields documented in [CLAUDE.md](CLAUDE.md) "Contract surface"
+- **`endpoints.yaml` schema** — fields documented in [AGENTS.md](AGENTS.md#contract-surface) "Contract surface"
 - **Deploy artifact identifiers** — `bastionhub-tunnel.service` (systemd unit), `com.roselabs.bastionhub-tunnel` (launchd label), `10-bastionhub.conf` / `30-passthrough-acl.conf` (sshd drop-ins)
 - **`serve` HTTP surface** — the far-end routes (`/j/<code>`, `/e/<code>/pubkey`, `/e/<code>/cert`) are the contract a bootstrap script in the wild depends on. The `/api/` routes are operator-facing and move with the CLI.
 
