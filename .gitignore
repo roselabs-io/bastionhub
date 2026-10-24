@@ -15,7 +15,3 @@ coverage.*
 # OS
 .DS_Store
 Thumbs.db
-
-# Local config snapshots / overrides
-endpoints.local.yaml
-*.local.yaml
