@@ -3,9 +3,10 @@
 Instructions for agent sessions working in this repository. `pipeline.yaml` names this file for
 `docs.agents`, `docs.contract`, `docs.review_posture` and `docs.operating_model`.
 
-[`CLAUDE.md`](CLAUDE.md) holds the scope, the contract surface (CLI grammar, `endpoints.yaml`,
-deploy artifact identifiers, `serve` routes), the constraints and the conventions. This file does
-not repeat them.
+The scope, the contract surface (CLI grammar, `endpoints.yaml`, deploy artifact identifiers,
+`serve` routes), the constraints and the conventions are the sections [Scope](#scope), [Contract
+surface](#contract-surface), [Constraints worth knowing](#constraints-worth-knowing) and
+[Conventions](#conventions).
 
 ## Repository
 
@@ -18,17 +19,100 @@ systemd unit `bastionhub-serve.service`.
 | `main.go` | the CLI; `version` is a `var` set with `-ldflags "-X main.version=<tag>"` at release |
 | `serve.go` | `bastionhub serve` (the invite and relay service) and `bastionhub invite` |
 | `main_test.go`, `serve_test.go` | the tests (`go test ./...`) |
+| `principal-to-acl_test.go` | the tests of `deploy/bastion/principal-to-acl.sh` (`go test ./...`) |
+| `go.mod`, `go.sum` | the module `github.com/roselabs-io/bastionhub` (`go 1.25.5`) and the locked dependencies |
+| `justfile` | the recipes (Commands) |
 | `deploy/install.sh` | the bastion installer for Debian and Ubuntu |
 | `deploy/bastion/` | sshd drop-ins and `principal-to-acl.sh` installed on the bastion; `README.md` describes them |
-| `README.md`, `CHANGELOG.md`, `CLAUDE.md` | usage, release notes, contributor notes |
+| `README.md`, `CHANGELOG.md`, `AGENTS.md` | usage, release notes, contributor notes ([Scope](#scope), [Contract surface](#contract-surface), [Constraints worth knowing](#constraints-worth-knowing) and [Conventions](#conventions)) |
+| `CLAUDE.md` | the single line `@AGENTS.md`, which Claude Code imports |
+| `.gemini/settings.json` | `context.fileName` set to `AGENTS.md`, Gemini CLI's context file |
+| `LICENSE` | the MIT license text |
 | `.github/workflows/bastionhub-audit.yml` | `just audit` on a pull request or a push to `main` that changes `go.mod` or `go.sum`, weekly on `main`, and on manual dispatch |
 | `.github/workflows/release.yml` | on a `v*` tag push, or called by `bastionhub-ci.yml` with a tag: builds six targets, archives, `checksums.txt`, a GitHub Release, then a `formula-update` event to `roselabs-io/homebrew-tools` |
 | `.github/workflows/bastionhub-ci.yml` | `validate` (PR metadata) and `gate` (`just gate`); on a push to `main`, `tag` and `release` (Releases) |
 | `.secrets.baseline` | the detect-secrets baseline `just secrets` reads: findings that are not secrets |
+| `.gitignore` | the build artifacts, IDE and OS files it ignores |
 | `.github/workflows/bastionhub-pm.yml` | the issue and board sync of Governor |
 | `pipeline.yaml` | the Governor dispatcher's config for this repository |
 | `tools/secret_scan.py` | the secret scan `just secrets` runs |
 | Governor's package preflight (`tools/local_preflight.py` of the Governor package, run by the dispatcher; this repository keeps no copy) | `just check` and selected tests of the diff; CI runs `just gate` |
+
+## Scope
+
+Out of scope, deliberately:
+
+- **Certificate mechanics.** `endpoint enroll` and `invite` shell out to
+  `sshca`. No CA private key is ever held here.
+- **Policy.** `endpoints.yaml` carries port, user, identity and description.
+  There is no concept of a customer, role or environment.
+- **Other transports.** SSH bastion and reverse tunnels only, not Tailscale,
+  WireGuard or DERP.
+- **Observability.** Beyond `status` and sshd's own connection logs.
+
+## Contract surface
+
+Three things callers depend on. Breaking any requires a major version bump.
+
+**CLI grammar** — subcommand names, flag names, argument positions, exit codes.
+`bastionhub --help` is canonical.
+
+**`endpoints.yaml` schema** at `~/.config/bastionhub/endpoints.yaml`
+(`$BASTIONHUB_CONFIG`), mode 0600:
+
+```yaml
+bastion_alias: <string>      # default "bastion"; ProxyJump target
+admin_alias:   <string>      # default "bastion-root"; used by status
+
+endpoints:
+  <name>:
+    port:        <int>       # required; 12001-12099 by convention
+    user:        <string>    # required
+    identity:    <string>    # optional; SSH key for the hop to the endpoint
+    description: <string>    # optional
+```
+
+Unknown keys are tolerated; fields may be added in a minor release.
+
+**Deploy artifact identifiers**, which external monitoring may key on:
+
+- systemd unit `bastionhub-tunnel.service`
+- launchd label `com.roselabs.bastionhub-tunnel`
+- sshd drop-ins `10-bastionhub.conf`, `30-passthrough-acl.conf`
+
+`serve`'s far-end routes — `/j/<code>`, `/e/<code>/pubkey`, `/e/<code>/cert` —
+are also a contract, because a bootstrap script already running in the wild
+depends on them. The `/api/` routes move with the CLI.
+
+## Constraints worth knowing
+
+- **`Match Principal` is not valid `sshd_config` syntax.** `Match` accepts
+  `User`, `Group`, `Host`, `LocalAddress`, `LocalPort`, `RDomain` and `Address`
+  only. Role enforcement uses `Match User`, because OpenSSH requires a
+  certificate's principal to match the target username.
+- **Neither `PermitListen` nor `PermitOpen` accepts a port range.**
+  `12001-12099` is a syntax error. `PermitOpen` also matches the requested host
+  as a literal string, so `127.0.0.1:<port>` and `localhost:<port>` both need
+  listing. `deploy/install.sh` generates both lists.
+- **Don't reintroduce `syscall.Exec` in `sshCmd`.** It is Unix-only. The
+  `exec.Command` plus `Run()` pattern with inherited stdio is correct on
+  Windows and forwards signals properly.
+- **`loadConfig` must re-initialise the `Endpoints` map after unmarshalling.**
+  YAML with `endpoints:` and only commented children unmarshals to a nil map,
+  and the first register then panics. Covered by
+  `TestLoadConfig_NilMapRegression`.
+- **The session bootstrap script must not `exec ssh`.** `exec` replaces the
+  shell and discards the `EXIT` trap, leaving the private key on a machine that
+  was promised nothing would remain. Covered by
+  `TestSessionScriptDoesNotExecAwayItsCleanup`.
+- **`version` in `main.go` is a `var`, not a `const`**, so release builds can
+  inject the tag with `-ldflags "-X main.version=<tag>"`.
+
+## Conventions
+
+- Filenames: kebab-case.
+- Dates: ISO `YYYY-MM-DD`.
+- No YAML frontmatter in Markdown.
 
 ## Releases
 
@@ -103,7 +187,7 @@ also requires a `Bastionhub-Agent` line naming a configured lane. `validate` of
 `autonomy: full`: the merge queue merges every approved PR; no merge waits for a person.
 
 A change to the CLI grammar, the `endpoints.yaml` schema, a deploy artifact identifier or a far-end
-`serve` route is a contract change (`CLAUDE.md`, Contract surface) and is recorded in
+`serve` route is a contract change ([Contract surface](#contract-surface)) and is recorded in
 `CHANGELOG.md`.
 
 ## Finding triage
