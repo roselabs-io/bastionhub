@@ -8,6 +8,7 @@ Format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `bastionhub serve` reads the admin token from `BASTIONHUB_ADMIN_TOKEN` when it is set and non-empty; no token file is read or written in that case. Otherwise it uses the token file as before.
 - `bastionhub serve --trusted-proxies` (`BASTIONHUB_TRUSTED_PROXIES`): comma-separated proxy CIDRs, empty by default. Failed invite lookups use the rightmost `X-Forwarded-For` address only for trusted peers. Blocked lookups include `Retry-After: 1800`.
 - `bastionhub bastion verify` — checks the bastion over SSH (`admin_alias`) and prints PASS or FAIL per check: the `10-bastionhub.conf` and `30-passthrough-acl.conf` drop-ins exist; the `gw-tunnel`, `gw-user` and `gw-passthrough` accounts exist; the `TrustedUserCAKeys` file lists the local `sshca` user CA; the `RevokedKeys` KRL is readable. Exits 1 when a check fails.
 

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -839,5 +840,27 @@ func TestRecordEndpointUpserts(t *testing.T) {
 	}
 	if cfg.Endpoints["tex-mmv2"].Port != 12006 {
 		t.Errorf("port = %d, want the later 12006", cfg.Endpoints["tex-mmv2"].Port)
+	}
+}
+
+func TestResolveAdminToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "admin-token")
+
+	t.Setenv("BASTIONHUB_ADMIN_TOKEN", "  from-env\n")
+	tok, fresh, fromEnv, err := resolveAdminToken(path)
+	if err != nil || tok != "from-env" || fresh || !fromEnv {
+		t.Fatalf("env set: got %q fresh=%v fromEnv=%v err=%v", tok, fresh, fromEnv, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("token file created with the variable set: %v", err)
+	}
+
+	t.Setenv("BASTIONHUB_ADMIN_TOKEN", "")
+	tok, fresh, fromEnv, err = resolveAdminToken(path)
+	if err != nil || tok == "" || !fresh || fromEnv {
+		t.Fatalf("env unset: got %q fresh=%v fromEnv=%v err=%v", tok, fresh, fromEnv, err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("token file not created: %v", err)
 	}
 }
