@@ -100,8 +100,7 @@ fork does not receive.
 A PR from a branch `agent/<N>-…` carries exactly one `Bastionhub-Issue: #N` line; a dispatched run
 also requires a `Bastionhub-Agent` line naming a configured lane. `validate` of
 `bastionhub-ci.yml` checks both. `bastionhub-pm.yml` moves issue N on the board from that line.
-`autonomy: tiered`: the merge queue merges an approved PR, except that the merge of a complex or
-exceptional ticket's PR is left to a person.
+`autonomy: full`: the merge queue merges every approved PR; no merge waits for a person.
 
 A change to the CLI grammar, the `endpoints.yaml` schema, a deploy artifact identifier or a far-end
 `serve` route is a contract change (`CLAUDE.md`, Contract surface) and is recorded in
