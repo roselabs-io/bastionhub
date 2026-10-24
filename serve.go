@@ -1254,6 +1254,17 @@ func adminTokenPath() string {
 	return filepath.Join(home, ".config", "bastionhub", "admin-token")
 }
 
+// resolveAdminToken returns $BASTIONHUB_ADMIN_TOKEN when it is set and
+// non-empty, and writes no file in that case. Otherwise it loads or creates
+// the token file.
+func resolveAdminToken(path string) (tok string, fresh, fromEnv bool, err error) {
+	if v := strings.TrimSpace(os.Getenv("BASTIONHUB_ADMIN_TOKEN")); v != "" {
+		return v, false, true, nil
+	}
+	tok, fresh, err = loadOrCreateAdminToken(path)
+	return tok, fresh, false, err
+}
+
 // loadOrCreateAdminToken reads the admin token, minting one on first run.
 func loadOrCreateAdminToken(path string) (string, bool, error) {
 	data, err := os.ReadFile(path)
@@ -1309,7 +1320,7 @@ func serveCmd(ctx context.Context, cmd *cli.Command) error {
 	}
 	baseURL = strings.TrimSuffix(baseURL, "/")
 
-	token, fresh, err := loadOrCreateAdminToken(adminTokenPath())
+	token, fresh, fromEnv, err := resolveAdminToken(adminTokenPath())
 	if err != nil {
 		return cli.Exit(fmt.Sprintf("admin token: %v", err), 1)
 	}
@@ -1335,7 +1346,10 @@ func serveCmd(ctx context.Context, cmd *cli.Command) error {
 	fmt.Printf("  bastion:    %s (what far ends dial for SSH)\n", bastion)
 	fmt.Printf("  state:      %s\n", serveStatePath())
 	fmt.Println()
-	if fresh {
+	if fromEnv {
+		fmt.Println("Admin token read from $BASTIONHUB_ADMIN_TOKEN.")
+		fmt.Println()
+	} else if fresh {
 		fmt.Println("A new admin token was generated. Put it on the operator's laptop:")
 		fmt.Printf("\n    export BASTIONHUB_ADMIN_TOKEN=%s\n\n", token)
 		fmt.Printf("It is stored at %s (0600). This is the last time it is printed in full.\n\n", adminTokenPath())

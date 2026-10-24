@@ -253,7 +253,9 @@ from what it actually enrolled rather than a copy of the operator's file.
 State is written to `~/.config/bastionhub/invites.json`
 (`$BASTIONHUB_SERVE_STATE`). The admin token is generated on first run and
 stored at `~/.config/bastionhub/admin-token`
-(`$BASTIONHUB_ADMIN_TOKEN_FILE`), mode 0600.
+(`$BASTIONHUB_ADMIN_TOKEN_FILE`), mode 0600. When `$BASTIONHUB_ADMIN_TOKEN` is
+set and non-empty, `serve` uses it instead: no token file is read or written
+and the token is not printed.
 
 Invite codes are 8 characters drawn from a 31-symbol alphabet excluding `0`,
 `O`, `1`, `I` and `L`. They are single-use and expire after `--ttl` (default 30
