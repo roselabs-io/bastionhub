@@ -25,6 +25,8 @@ systemd unit `bastionhub-serve.service`.
 | `deploy/install.sh` | the bastion installer for Debian and Ubuntu |
 | `deploy/bastion/` | sshd drop-ins and `principal-to-acl.sh` installed on the bastion; `README.md` describes them |
 | `README.md`, `CHANGELOG.md`, `AGENTS.md` | usage, release notes, contributor notes ([Scope](#scope), [Contract surface](#contract-surface), [Constraints worth knowing](#constraints-worth-knowing) and [Conventions](#conventions)) |
+| `CLAUDE.md` | the single line `@AGENTS.md`, which Claude Code imports |
+| `.gemini/settings.json` | `context.fileName` set to `AGENTS.md`, Gemini CLI's context file |
 | `LICENSE` | the MIT license text |
 | `.github/workflows/bastionhub-audit.yml` | `just audit` on a pull request or a push to `main` that changes `go.mod` or `go.sum`, weekly on `main`, and on manual dispatch |
 | `.github/workflows/release.yml` | on a `v*` tag push, or called by `bastionhub-ci.yml` with a tag: builds six targets, archives, `checksums.txt`, a GitHub Release, then a `formula-update` event to `roselabs-io/homebrew-tools` |
