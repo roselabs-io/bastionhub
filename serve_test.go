@@ -864,3 +864,78 @@ func TestResolveAdminToken(t *testing.T) {
 		t.Fatalf("token file not created: %v", err)
 	}
 }
+
+func TestHealth(t *testing.T) {
+	s := newTestServer(t)
+	for _, tc := range []struct {
+		method string
+		code   int
+		body   string
+	}{
+		{http.MethodGet, http.StatusOK, `{"status":"ok"}`},
+		{http.MethodHead, http.StatusOK, ""},
+		{http.MethodPost, http.StatusMethodNotAllowed, ""},
+	} {
+		w := s.req(t, tc.method, "/health", "", "")
+		if w.Code != tc.code {
+			t.Errorf("%s /health: status %d, want %d", tc.method, w.Code, tc.code)
+		}
+		if tc.code == http.StatusOK {
+			if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("%s /health: Content-Type %q", tc.method, ct)
+			}
+			if got := strings.TrimSpace(w.Body.String()); got != tc.body {
+				t.Errorf("%s /health: body %q, want %q", tc.method, got, tc.body)
+			}
+		}
+	}
+}
+
+func TestMetrics(t *testing.T) {
+	s := newTestServer(t)
+	s.req(t, http.MethodGet, "/health", "", "")
+	s.req(t, http.MethodGet, "/j/nosuchcode", "", "")
+	s.req(t, http.MethodGet, "/nowhere", "", "")
+
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		if w := s.req(t, method, "/metrics", "", ""); w.Code != http.StatusUnauthorized {
+			t.Errorf("%s /metrics without token: status %d, want 401", method, w.Code)
+		}
+		if w := s.req(t, method, "/metrics", "", "wrong"); w.Code != http.StatusUnauthorized {
+			t.Errorf("%s /metrics with wrong token: status %d, want 401", method, w.Code)
+		}
+	}
+	if w := s.req(t, http.MethodPost, "/metrics", "", s.adminToken); w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /metrics: status %d, want 405", w.Code)
+	}
+
+	w := s.req(t, http.MethodGet, "/metrics", "", s.adminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /metrics: status %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "text/plain; version=0.0.4; charset=utf-8" {
+		t.Errorf("GET /metrics: Content-Type %q", ct)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"# TYPE bastionhub_http_requests_total counter\n",
+		`bastionhub_http_requests_total{route="/health",code="200"} 1` + "\n",
+		`bastionhub_http_requests_total{route="/j/",code="404"} 1` + "\n",
+		`bastionhub_http_requests_total{route="/",code="404"} 1` + "\n",
+		`bastionhub_http_requests_total{route="/metrics",code="401"} 4` + "\n",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("GET /metrics: missing %q in\n%s", want, body)
+		}
+	}
+	for _, leak := range []string{"nosuchcode", "203.0.113.7"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("GET /metrics: body contains %q", leak)
+		}
+	}
+
+	w = s.req(t, http.MethodHead, "/metrics", "", s.adminToken)
+	if w.Code != http.StatusOK || w.Body.Len() != 0 {
+		t.Errorf("HEAD /metrics: status %d, body length %d, want 200 and 0", w.Code, w.Body.Len())
+	}
+}

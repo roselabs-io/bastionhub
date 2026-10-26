@@ -31,11 +31,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -364,6 +366,66 @@ type server struct {
 	bastion        string // public hostname the far end dials for SSH
 	baseURL        string // public base URL of this service, for the bootstrap line
 	now            func() time.Time
+	metrics        requestCounts
+}
+
+// requestCounts counts responses by route pattern and status code. The route
+// is the matched ServeMux pattern, so the label set is fixed and holds no
+// invite code, user name or address.
+type requestCounts struct {
+	mu sync.Mutex
+	n  map[[2]string]uint64
+}
+
+func (c *requestCounts) add(route string, status int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.n == nil {
+		c.n = map[[2]string]uint64{}
+	}
+	c.n[[2]string{route, strconv.Itoa(status)}]++
+}
+
+// write emits the Prometheus text exposition format, version 0.0.4.
+func (c *requestCounts) write(w io.Writer) {
+	c.mu.Lock()
+	keys := make([][2]string, 0, len(c.n))
+	vals := make(map[[2]string]uint64, len(c.n))
+	for k, v := range c.n {
+		keys = append(keys, k)
+		vals[k] = v
+	}
+	c.mu.Unlock()
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i][0] != keys[j][0] {
+			return keys[i][0] < keys[j][0]
+		}
+		return keys[i][1] < keys[j][1]
+	})
+	fmt.Fprintln(w, "# HELP bastionhub_http_requests_total HTTP responses by route pattern and status code.")
+	fmt.Fprintln(w, "# TYPE bastionhub_http_requests_total counter")
+	for _, k := range keys {
+		fmt.Fprintf(w, "bastionhub_http_requests_total{route=%q,code=%q} %d\n", k[0], k[1], vals[k])
+	}
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	if r.status == 0 {
+		r.status = code
+	}
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
 }
 
 func (s *server) clock() time.Time {
@@ -857,12 +919,48 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			writeErr(w, http.StatusMethodNotAllowed, "GET or HEAD only")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if r.Method == http.MethodGet {
+			fmt.Fprintln(w, `{"status":"ok"}`)
+		}
+	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			writeErr(w, http.StatusMethodNotAllowed, "GET or HEAD only")
+			return
+		}
+		if !s.authAdmin(r) {
+			writeErr(w, http.StatusUnauthorized, "bad or missing admin token")
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		if r.Method == http.MethodGet {
+			s.metrics.write(w)
+		}
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Deliberately terse. This service is not a website and every byte it
 		// serves to an unauthenticated stranger is surface.
 		writeErr(w, http.StatusNotFound, "no such route")
 	})
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, route := mux.Handler(r)
+		rec := &statusRecorder{ResponseWriter: w}
+		mux.ServeHTTP(rec, r)
+		if rec.status == 0 {
+			rec.status = http.StatusOK
+		}
+		s.metrics.add(route, rec.status)
+	})
 }
 
 // -----------------------------------------------------------------------------
