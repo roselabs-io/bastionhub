@@ -10,13 +10,17 @@ run-name: "${{ inputs.pr_number && format('bastionhub CI PR #{0} {1}', inputs.pr
 #
 # Both jobs run on GitHub-hosted `ubuntu-latest`: the repository is public, and the organization's
 # self-hosted runner group does not serve public repositories. `gate` installs `just`, the Go
-# version of `go.mod` and uv (which runs the `secrets` recipe) before `just gate`. A PR from a fork receives no `GOVERNOR_PM_TOKEN`, so its
-# `Check out the Governor package` step fails.
+# version of `go.mod` and uv (which runs the `secrets` recipe) before `just gate`.
+#
+# `validate` checks out the private Governor package with `GOVERNOR_PM_TOKEN`, a secret of the Bitwarden project
+# `roselabs-ci` (id: the organization variable `BWS_SHARED_PROJECT_ID`), which `bws` reads with the secret
+# `BWS_ACCESS_TOKEN` and writes, masked, to `$GITHUB_ENV`. A PR from a fork receives no `BWS_ACCESS_TOKEN`, so its
+# `Read GOVERNOR_PM_TOKEN` step fails.
 #
 # On a push to `main`, `tag` runs after `gate`: it reads the newest `## [X.Y.Z]` heading of
 # CHANGELOG.md (a heading with a `-` suffix and `[Unreleased]` do not match) and, when the tag
 # `vX.Y.Z` does not exist on origin, pushes it on the pushed commit with GITHUB_TOKEN. `release`
-# then calls release.yml with that tag. A run of a push to `main` is not cancelled by a later push,
+# then calls release.yml with that tag and passes it `BWS_ACCESS_TOKEN`. A run of a push to `main` is not cancelled by a later push,
 # so a release that has pushed its tag finishes; a dispatched run (also on `main`) is cancelled by a
 # later dispatch for the same PR.
 
@@ -91,12 +95,36 @@ jobs:
             const fs = require("fs");
             fs.writeFileSync(`${process.env.RUNNER_TEMP}/bastionhub-pr.json`, JSON.stringify(pr));
 
+      # `bws` 2.1.0 from the releases of bitwarden/sdk-sm, checked against its SHA-256 and run from $RUNNER_TEMP.
+      - name: Install bws
+        if: github.event_name == 'pull_request' || inputs.pr_number != ''
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/bws.zip" https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.1.0/bws-x86_64-unknown-linux-gnu-2.1.0.zip
+          echo "ba8233c3a4aee5d43e3c73bbd04d99e9bc5aba13bbbfd06d89b073abe732b860  $RUNNER_TEMP/bws.zip" | sha256sum --check --quiet
+          python3 -m zipfile -e "$RUNNER_TEMP/bws.zip" "$RUNNER_TEMP/bws"
+          chmod +x "$RUNNER_TEMP/bws/bws"
+          echo "$RUNNER_TEMP/bws" >> "$GITHUB_PATH"
+
+      - name: Read GOVERNOR_PM_TOKEN
+        if: github.event_name == 'pull_request' || inputs.pr_number != ''
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+          BWS_PROJECT_ID: ${{ vars.BWS_SHARED_PROJECT_ID }}
+        run: |
+          # The variable expands in the shell `bws run` starts, where the secret is set.
+          # shellcheck disable=SC2016
+          bws run --project-id "$BWS_PROJECT_ID" -- '
+            test -n "$GOVERNOR_PM_TOKEN" || { echo "::error::GOVERNOR_PM_TOKEN is not in the Bitwarden project $BWS_PROJECT_ID"; exit 1; }
+            echo "::add-mask::$GOVERNOR_PM_TOKEN"
+            echo "GOVERNOR_PM_TOKEN=$GOVERNOR_PM_TOKEN" >> "$GITHUB_ENV"
+          '
+
       - name: Check out the Governor package
         if: github.event_name == 'pull_request' || inputs.pr_number != ''
         uses: actions/checkout@v7
         with:
           repository: roselabs-io/governor
-          token: ${{ secrets.GOVERNOR_PM_TOKEN }}
+          token: ${{ env.GOVERNOR_PM_TOKEN }}
           path: .governor-package
 
       - name: Install uv
@@ -190,4 +218,4 @@ jobs:
     with:
       tag: ${{ needs.tag.outputs.tag }}
     secrets:
-      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}

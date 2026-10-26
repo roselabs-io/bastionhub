@@ -132,8 +132,8 @@ is replaced, and the newer run tags its own commit when the tag does not exist.
 
 After the GitHub Release, the `homebrew` job of `release.yml` sends a `repository_dispatch` event
 (`formula-update`, payload `tool` and `tag`) to `roselabs-io/homebrew-tools`, whose workflow updates
-the formula. The job uses the secret `HOMEBREW_TAP_TOKEN` and does not run for a tag containing `-`
-(a prerelease).
+the formula. The job reads `HOMEBREW_TAP_TOKEN` from Bitwarden (CI) and does not run for a tag
+containing `-` (a prerelease).
 
 A release is not deleted. A bad release is reverted on `main`, and a PR with a new patch heading
 releases `vX.Y.Z+1`. The formula is rolled back by reverting its commit in
@@ -176,8 +176,24 @@ the diff. `detect-secrets scan --baseline` does not record `go.sum` findings. An
 
 All workflows run on GitHub-hosted `ubuntu-latest`. The repository is public; the organization's
 self-hosted runners do not serve it. `validate` and `bastionhub-pm.yml` check out the private
-`roselabs-io/governor` with the organization secret `GOVERNOR_PM_TOKEN`, which a workflow run from a
-fork does not receive.
+`roselabs-io/governor` with `GOVERNOR_PM_TOKEN` (Secrets in CI), which a workflow run from a fork does
+not receive.
+
+### Secrets in CI
+
+`GOVERNOR_PM_TOKEN` and `HOMEBREW_TAP_TOKEN` are secrets of the Bitwarden Secrets Manager project
+`roselabs-ci`, whose id is the organization variable `BWS_SHARED_PROJECT_ID`. A job that needs one
+downloads `bws` 2.1.0 (`bitwarden/sdk-sm`, `x86_64-unknown-linux-gnu`), checks its SHA-256, and reads
+the project with the secret `BWS_ACCESS_TOKEN`, the only secret the workflows read besides
+`GITHUB_TOKEN`:
+
+| Secret | Job | Read as |
+|---|---|---|
+| `GOVERNOR_PM_TOKEN` | `validate` of `bastionhub-ci.yml`, `sync` of `bastionhub-pm.yml` | written, masked, to `$GITHUB_ENV` for `actions/checkout`; the PM sync runs under `bws run` |
+| `HOMEBREW_TAP_TOKEN` | `homebrew` of `release.yml` | `GH_TOKEN` of the `repository_dispatch`, under `bws run` |
+
+`release.yml` called from `bastionhub-ci.yml` receives `BWS_ACCESS_TOKEN` as its `workflow_call`
+secret. A run from a fork receives no `BWS_ACCESS_TOKEN`.
 
 ## Pull requests
 

@@ -11,6 +11,10 @@
 # repository_dispatch event (formula-update, with the tool and the
 # tag) to roselabs-io/homebrew-tools, whose workflow updates
 # Formula/bastionhub.rb. Prerelease tags (containing '-') send none.
+# The event is sent with HOMEBREW_TAP_TOKEN, a secret of the
+# Bitwarden project roselabs-ci (id: the organization variable
+# BWS_SHARED_PROJECT_ID), under `bws run` with the secret
+# BWS_ACCESS_TOKEN.
 #
 # Version is injected via -ldflags so `bastionhub --version` reports
 # the actual git tag rather than the source-default "0.1.0-dev".
@@ -27,7 +31,7 @@ on:
         required: true
         type: string
     secrets:
-      HOMEBREW_TAP_TOKEN:
+      BWS_ACCESS_TOKEN:
         required: true
 
 env:
@@ -132,13 +136,30 @@ jobs:
     if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
     runs-on: ubuntu-latest
     steps:
+      # `bws` 2.1.0 from the releases of bitwarden/sdk-sm, checked against
+      # its SHA-256 and run from $RUNNER_TEMP.
+      - name: Install bws
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/bws.zip" https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.1.0/bws-x86_64-unknown-linux-gnu-2.1.0.zip
+          echo "ba8233c3a4aee5d43e3c73bbd04d99e9bc5aba13bbbfd06d89b073abe732b860  $RUNNER_TEMP/bws.zip" | sha256sum --check --quiet
+          python3 -m zipfile -e "$RUNNER_TEMP/bws.zip" "$RUNNER_TEMP/bws"
+          chmod +x "$RUNNER_TEMP/bws/bws"
+          echo "$RUNNER_TEMP/bws" >> "$GITHUB_PATH"
+
       # GITHUB_TOKEN cannot write to another repository; HOMEBREW_TAP_TOKEN
       # needs Contents write on roselabs-io/homebrew-tools.
       - name: Send formula-update event
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+          BWS_PROJECT_ID: ${{ vars.BWS_SHARED_PROJECT_ID }}
         run: |
-          gh api repos/roselabs-io/homebrew-tools/dispatches \
-            -f event_type=formula-update \
-            -f "client_payload[tool]=bastionhub" \
-            -f "client_payload[tag]=${TAG}"
+          # The variables expand in the shell `bws run` starts, where the
+          # secret is set.
+          # shellcheck disable=SC2016
+          bws run --project-id "$BWS_PROJECT_ID" -- '
+            test -n "$HOMEBREW_TAP_TOKEN" || { echo "::error::HOMEBREW_TAP_TOKEN is not in the Bitwarden project $BWS_PROJECT_ID"; exit 1; }
+            GH_TOKEN="$HOMEBREW_TAP_TOKEN" gh api repos/roselabs-io/homebrew-tools/dispatches \
+              -f event_type=formula-update \
+              -f "client_payload[tool]=bastionhub" \
+              -f "client_payload[tag]=$TAG"
+          '
