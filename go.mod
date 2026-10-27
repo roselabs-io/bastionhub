@@ -1,6 +1,6 @@
 module github.com/roselabs-io/bastionhub
 
-go 1.25.5
+go 1.26.10
 
 require (
 	github.com/urfave/cli/v3 v3.9.0
