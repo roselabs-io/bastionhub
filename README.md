@@ -200,15 +200,6 @@ be compared out of band. `--yes` skips the prompt.
 Signing happens on the machine running `invite`, via `sshca cert sign`. That
 machine must be reachable while an invite is redeemed.
 
-## MCP server
-
-`bastionhub mcp` serves the read-only MCP tools `list_endpoints` and
-`get_tunnel_status`. It uses stdio by default. `--transport http` serves
-Streamable HTTP at `http://127.0.0.1:8421/mcp`; requests with a disallowed
-`Origin` are rejected. Tunnel status queries the configured bastion over SSH,
-or the local host when `BASTIONHUB_LOCAL=1`. The MCP server does not issue
-access, invites or certificates. See [docs/mcp.md](docs/mcp.md).
-
 ### Shapes
 
 `--shape` selects what the bootstrap script does after it installs the
@@ -292,6 +283,15 @@ restrict it to proxy addresses or a network reserved for trusted proxies.
 
 Blocked invite lookups return `429` with `Retry-After: 1800` (seconds), a
 conservative wait covering the full 30-minute attempt window.
+
+## MCP server
+
+`bastionhub mcp` serves the read-only MCP tools `list_endpoints` and
+`get_tunnel_status`. It uses stdio by default. `--transport http` serves
+Streamable HTTP at `http://127.0.0.1:8421/mcp`; requests with a disallowed
+`Origin` are rejected. Tunnel status queries the configured bastion over SSH,
+or the local host when `BASTIONHUB_LOCAL=1`. The MCP server does not issue
+access, invites or certificates. See [docs/mcp.md](docs/mcp.md).
 
 ## Releases
 
