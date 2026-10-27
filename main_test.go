@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -173,6 +174,56 @@ func TestStatusLocalModeIsEnvControlled(t *testing.T) {
 	t.Setenv("BASTIONHUB_LOCAL", "1")
 	if os.Getenv("BASTIONHUB_LOCAL") == "" {
 		t.Fatal("set env should read non-empty")
+	}
+}
+
+// The header counts every 127.0.0.1 listener on the bastion, including ones
+// that are not configured endpoints (serve on 8420).
+func TestStatusCmdCountsEveryListener(t *testing.T) {
+	bin := t.TempDir()
+	stub := "#!/bin/sh\nprintf '8420 01:00\\n12001 02:00\\n'\n"
+	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("BASTIONHUB_LOCAL", "")
+	cfgPath := filepath.Join(t.TempDir(), "endpoints.yaml")
+	cfg := "admin_alias: test-root\nendpoints:\n  edge-a:\n    port: 12001\n    user: root\n  edge-b:\n    port: 12002\n    user: root\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BASTIONHUB_CONFIG", cfgPath)
+	out, err := captureStdout(t, func() error { return statusCmd(context.Background(), nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "Querying test-root — 2 configured endpoint(s), 2 live listener(s)\n"; !strings.HasPrefix(out, want) {
+		t.Errorf("output does not start with %q:\n%s", want, out)
+	}
+}
+
+func TestWriteMCPTokenReplacesFileWithMode0600(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp-token")
+	if err := os.WriteFile(path, []byte("stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	token, err := writeMCPToken(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != token+"\n" || len(token) != 2*adminTokenBytes {
+		t.Errorf("file holds %q, token %q", got, token)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, want 0600", info.Mode().Perm())
 	}
 }
 

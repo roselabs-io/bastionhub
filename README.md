@@ -1,7 +1,7 @@
 # bastionhub
 
-An SSH bastion and reverse-tunnel manager. Single Go binary, two dependencies
-(`urfave/cli/v3` and `yaml.v3`). Linux, macOS and Windows. Uses
+An SSH bastion and reverse-tunnel manager. Single Go binary using
+`urfave/cli/v3`, `yaml.v3` and the official MCP Go SDK. Linux, macOS and Windows. Uses
 [sshca](https://github.com/roselabs-io/sshca) for certificate operations.
 
 ## Overview
@@ -283,6 +283,17 @@ restrict it to proxy addresses or a network reserved for trusted proxies.
 
 Blocked invite lookups return `429` with `Retry-After: 1800` (seconds), a
 conservative wait covering the full 30-minute attempt window.
+
+## MCP server
+
+`bastionhub mcp` serves the read-only MCP tools `list_endpoints` and
+`get_tunnel_status`. It uses stdio by default. `--transport http` serves
+Streamable HTTP at `http://127.0.0.1:8421/mcp`; each request carries the
+bearer token the server writes at start to `~/.config/bastionhub/mcp-token`
+(`$BASTIONHUB_MCP_TOKEN_FILE`, mode 0600, deleted at stop), and requests with a
+disallowed `Origin` are rejected. Tunnel status queries the configured bastion over SSH,
+or the local host when `BASTIONHUB_LOCAL=1`. The MCP server does not issue
+access, invites or certificates. See [docs/mcp.md](docs/mcp.md).
 
 ## Releases
 

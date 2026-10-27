@@ -8,17 +8,25 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	bastionmcp "github.com/roselabs-io/bastionhub/mcp"
 	"github.com/urfave/cli/v3"
 	"gopkg.in/yaml.v3"
 )
@@ -206,7 +214,7 @@ func listCmd(_ context.Context, _ *cli.Command) error {
 	return nil
 }
 
-func statusCmd(_ context.Context, _ *cli.Command) error {
+func statusCmd(ctx context.Context, _ *cli.Command) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return cli.Exit(err.Error(), 1)
@@ -215,6 +223,22 @@ func statusCmd(_ context.Context, _ *cli.Command) error {
 		fmt.Printf("(no endpoints configured in %s)\n", configPath())
 		return nil
 	}
+	tunnels, source, listeners, err := readTunnelStatus(ctx, cfg)
+	if err != nil {
+		return cli.Exit(err.Error(), 1)
+	}
+	fmt.Printf("Querying %s — %d configured endpoint(s), %d live listener(s)\n\n",
+		source, len(cfg.Endpoints), listeners)
+	fmt.Printf("%-20s %-7s %-6s %-12s %s\n", "NAME", "PORT", "STATUS", "UPTIME", "DESCRIPTION")
+	for _, tunnel := range tunnels {
+		fmt.Printf("%-20s %-7d %-6s %-12s %s\n", tunnel.Name, tunnel.Port, tunnel.Status, tunnel.Uptime, tunnel.Description)
+	}
+	return nil
+}
+
+// readTunnelStatus returns the status of each configured endpoint, the host
+// queried, and the number of 127.0.0.1 listeners found there, endpoints or not.
+func readTunnelStatus(ctx context.Context, cfg *Config) ([]bastionmcp.Tunnel, string, int, error) {
 	remoteCmd := `ss -Hltnp 2>/dev/null | awk '/127\.0\.0\.1:/ {
         n = split($4, parts, ":"); port = parts[n]
         match($6, /pid=[0-9]+/); pid = substr($6, RSTART+4, RLENGTH-4)
@@ -231,20 +255,21 @@ func statusCmd(_ context.Context, _ *cli.Command) error {
 	local := os.Getenv("BASTIONHUB_LOCAL") != ""
 
 	var out []byte
+	var err error
 	if local {
-		out, err = exec.Command("sh", "-c", remoteCmd).Output()
+		out, err = exec.CommandContext(ctx, "sh", "-c", remoteCmd).Output()
 		if err != nil {
-			return cli.Exit(fmt.Sprintf("local status query failed: %v", err), 1)
+			return nil, "", 0, fmt.Errorf("local status query failed: %w", err)
 		}
 	} else {
-		out, err = exec.Command("ssh",
+		out, err = exec.CommandContext(ctx, "ssh",
 			"-o", "BatchMode=yes",
 			"-o", "ConnectTimeout=5",
 			cfg.AdminAlias,
 			remoteCmd,
 		).Output()
 		if err != nil {
-			return cli.Exit(fmt.Sprintf("status query to %s failed: %v", cfg.AdminAlias, err), 1)
+			return nil, "", 0, fmt.Errorf("status query to %s failed: %w", cfg.AdminAlias, err)
 		}
 	}
 	live := map[int]string{}
@@ -266,9 +291,7 @@ func statusCmd(_ context.Context, _ *cli.Command) error {
 	if local {
 		source = "this host"
 	}
-	fmt.Printf("Querying %s — %d configured endpoint(s), %d live listener(s)\n\n",
-		source, len(cfg.Endpoints), len(live))
-	fmt.Printf("%-20s %-7s %-6s %-12s %s\n", "NAME", "PORT", "STATUS", "UPTIME", "DESCRIPTION")
+	tunnels := make([]bastionmcp.Tunnel, 0, len(names))
 	for _, n := range names {
 		ep := cfg.Endpoints[n]
 		status, uptime := "DOWN", "—"
@@ -279,9 +302,129 @@ func statusCmd(_ context.Context, _ *cli.Command) error {
 				uptime = "?"
 			}
 		}
-		fmt.Printf("%-20s %-7d %-6s %-12s %s\n", n, ep.Port, status, uptime, ep.Description)
+		tunnels = append(tunnels, bastionmcp.Tunnel{Name: n, Port: ep.Port, Status: status, Uptime: uptime, Description: ep.Description})
 	}
-	return nil
+	return tunnels, source, len(live), nil
+}
+
+func mcpEndpoints(context.Context) ([]bastionmcp.Endpoint, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(cfg.Endpoints))
+	for name := range cfg.Endpoints {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	endpoints := make([]bastionmcp.Endpoint, 0, len(names))
+	for _, name := range names {
+		ep := cfg.Endpoints[name]
+		endpoints = append(endpoints, bastionmcp.Endpoint{Name: name, Port: ep.Port, User: ep.User, Description: ep.Description})
+	}
+	return endpoints, nil
+}
+
+func mcpTunnels(ctx context.Context) ([]bastionmcp.Tunnel, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return nil, err
+	}
+	if len(cfg.Endpoints) == 0 {
+		return []bastionmcp.Tunnel{}, nil
+	}
+	tunnels, _, _, err := readTunnelStatus(ctx, cfg)
+	return tunnels, err
+}
+
+func mcpCmd(ctx context.Context, cmd *cli.Command) error {
+	server := bastionmcp.NewServer(version, mcpEndpoints, mcpTunnels)
+	switch cmd.String("transport") {
+	case "stdio":
+		return server.Run(ctx, &mcp.StdioTransport{})
+	case "http":
+		return serveMCPHTTP(ctx, server)
+	default:
+		return cli.Exit("--transport must be stdio or http", 1)
+	}
+}
+
+func mcpTokenPath() string {
+	if p := os.Getenv("BASTIONHUB_MCP_TOKEN_FILE"); p != "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "bastionhub", "mcp-token")
+}
+
+// writeMCPToken writes a fresh token to path with mode 0600. An existing file
+// is removed first, so the token is never written into a file of another mode
+// or through a symlink.
+func writeMCPToken(path string) (string, error) {
+	token, err := newAdminToken()
+	if err != nil {
+		return "", fmt.Errorf("generating MCP token: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("creating %s: %w", filepath.Dir(path), err)
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("removing %s: %w", path, err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("creating %s: %w", path, err)
+	}
+	if _, err := f.WriteString(token + "\n"); err != nil {
+		f.Close()
+		return "", fmt.Errorf("writing %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("writing %s: %w", path, err)
+	}
+	return token, nil
+}
+
+// serveMCPHTTP serves the MCP server on HTTPAddress until SIGINT or SIGTERM.
+// The bearer token file exists only while the listener is open.
+func serveMCPHTTP(ctx context.Context, server *mcp.Server) error {
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	listener, err := net.Listen("tcp", bastionmcp.HTTPAddress)
+	if err != nil {
+		return cli.Exit(err.Error(), 1)
+	}
+	path := mcpTokenPath()
+	token, err := writeMCPToken(path)
+	if err != nil {
+		listener.Close()
+		return cli.Exit(err.Error(), 1)
+	}
+	defer os.Remove(path)
+	httpSrv := &http.Server{Handler: mcpPathHandler(bastionmcp.HTTPHandler(server, token))}
+	fmt.Printf("bastionhub MCP listening at http://%s%s\n", bastionmcp.HTTPAddress, bastionmcp.HTTPPath)
+	fmt.Printf("Bearer token in %s (0600); it is deleted when the server stops.\n", path)
+	errc := make(chan error, 1)
+	go func() { errc <- httpSrv.Serve(listener) }()
+	select {
+	case err := <-errc:
+		return cli.Exit(err.Error(), 1)
+	case <-ctx.Done():
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutCtx)
+		return nil
+	}
+}
+
+func mcpPathHandler(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != bastionmcp.HTTPPath {
+			http.NotFound(w, r)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
 }
 
 // verifyRemoteScript runs on the bastion as admin_alias. Each line it prints
@@ -1056,6 +1199,12 @@ func main() {
 				Description: "Queries the bastion over SSH using admin_alias. Set BASTIONHUB_LOCAL=1\n" +
 					"when running on the bastion itself, to query the local host directly.",
 				Action: statusCmd,
+			},
+			{
+				Name:   "mcp",
+				Usage:  "serve read-only endpoint and tunnel tools over MCP",
+				Flags:  []cli.Flag{&cli.StringFlag{Name: "transport", Usage: "MCP transport: stdio or local HTTP (default: stdio; environment: $BASTIONHUB_MCP_TRANSPORT); HTTP requires the bearer token it writes to $BASTIONHUB_MCP_TOKEN_FILE, default ~/.config/bastionhub/mcp-token", Value: "stdio", Sources: cli.EnvVars("BASTIONHUB_MCP_TRANSPORT")}},
+				Action: mcpCmd,
 			},
 			{
 				Name:  "bastion",
