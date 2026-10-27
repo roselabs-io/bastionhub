@@ -15,6 +15,10 @@ Format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `bastionhub serve --trusted-proxies` (`BASTIONHUB_TRUSTED_PROXIES`): comma-separated proxy CIDRs, empty by default. Failed invite lookups use the rightmost `X-Forwarded-For` address only for trusted peers. Blocked lookups include `Retry-After: 1800`.
 - `bastionhub bastion verify` — checks the bastion over SSH (`admin_alias`) and prints PASS or FAIL per check: the `10-bastionhub.conf` and `30-passthrough-acl.conf` drop-ins exist; the `gw-tunnel`, `gw-user` and `gw-passthrough` accounts exist; the `TrustedUserCAKeys` file lists the local `sshca` user CA; the `RevokedKeys` KRL is readable. Exits 1 when a check fails.
 
+### Security
+
+- Builds use Go 1.26.10 (the `go` directive of `go.mod`), which fixes the standard-library vulnerabilities in `crypto/tls`, `crypto/x509`, `encoding/asn1`, `net`, `net/http`, `net/textproto`, `net/url` and `os` that `govulncheck` reports as reachable under Go 1.25.5.
+
 ## [0.2.0] — 2026-08-23
 
 ### Added — enrollment for machines you don't control

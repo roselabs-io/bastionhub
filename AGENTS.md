@@ -10,7 +10,7 @@ surface](#contract-surface), [Constraints worth knowing](#constraints-worth-know
 
 ## Repository
 
-A Go CLI (`go.mod`: `go 1.25.5`; dependencies `urfave/cli/v3`, `gopkg.in/yaml.v3` and
+A Go CLI (`go.mod`: `go 1.26.10`; dependencies `urfave/cli/v3`, `gopkg.in/yaml.v3` and
 `github.com/modelcontextprotocol/go-sdk`). Certificate
 operations shell out to `sshca` at runtime. `bastionhub serve` also runs on the bastion as the
 systemd unit `bastionhub-serve.service`.
@@ -24,7 +24,7 @@ systemd unit `bastionhub-serve.service`.
 | `mcp/server.go` | the MCP tools and the HTTP handler of `bastionhub mcp` |
 | `mcp/server_test.go` | the tests of the MCP tools and the HTTP handler, through the SDK client (`go test ./...`) |
 | `docs/mcp.md` | the MCP server's tools, transports and HTTP token |
-| `go.mod`, `go.sum` | the module `github.com/roselabs-io/bastionhub` (`go 1.25.5`) and the locked dependencies |
+| `go.mod`, `go.sum` | the module `github.com/roselabs-io/bastionhub` (`go 1.26.10`) and the locked dependencies |
 | `justfile` | the recipes (Commands) |
 | `deploy/install.sh` | the bastion installer for Debian and Ubuntu |
 | `deploy/bastion/` | sshd drop-ins and `principal-to-acl.sh` installed on the bastion; `README.md` describes them |
