@@ -1,7 +1,7 @@
 # bastionhub
 
-An SSH bastion and reverse-tunnel manager. Single Go binary, two dependencies
-(`urfave/cli/v3` and `yaml.v3`). Linux, macOS and Windows. Uses
+An SSH bastion and reverse-tunnel manager. Single Go binary using
+`urfave/cli/v3`, `yaml.v3` and the official MCP Go SDK. Linux, macOS and Windows. Uses
 [sshca](https://github.com/roselabs-io/sshca) for certificate operations.
 
 ## Overview
@@ -199,6 +199,15 @@ be compared out of band. `--yes` skips the prompt.
 
 Signing happens on the machine running `invite`, via `sshca cert sign`. That
 machine must be reachable while an invite is redeemed.
+
+## MCP server
+
+`bastionhub mcp` serves the read-only MCP tools `list_endpoints` and
+`get_tunnel_status`. It uses stdio by default. `--transport http` serves
+Streamable HTTP at `http://127.0.0.1:8421/mcp`; requests with a disallowed
+`Origin` are rejected. Tunnel status queries the configured bastion over SSH,
+or the local host when `BASTIONHUB_LOCAL=1`. The MCP server does not issue
+access, invites or certificates. See [docs/mcp.md](docs/mcp.md).
 
 ### Shapes
 
