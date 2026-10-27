@@ -218,12 +218,12 @@ func statusCmd(ctx context.Context, _ *cli.Command) error {
 		fmt.Printf("(no endpoints configured in %s)\n", configPath())
 		return nil
 	}
-	tunnels, source, err := readTunnelStatus(ctx, cfg)
+	tunnels, source, listeners, err := readTunnelStatus(ctx, cfg)
 	if err != nil {
 		return cli.Exit(err.Error(), 1)
 	}
 	fmt.Printf("Querying %s — %d configured endpoint(s), %d live listener(s)\n\n",
-		source, len(cfg.Endpoints), countLiveTunnels(tunnels))
+		source, len(cfg.Endpoints), listeners)
 	fmt.Printf("%-20s %-7s %-6s %-12s %s\n", "NAME", "PORT", "STATUS", "UPTIME", "DESCRIPTION")
 	for _, tunnel := range tunnels {
 		fmt.Printf("%-20s %-7d %-6s %-12s %s\n", tunnel.Name, tunnel.Port, tunnel.Status, tunnel.Uptime, tunnel.Description)
@@ -231,7 +231,9 @@ func statusCmd(ctx context.Context, _ *cli.Command) error {
 	return nil
 }
 
-func readTunnelStatus(ctx context.Context, cfg *Config) ([]bastionmcp.Tunnel, string, error) {
+// readTunnelStatus returns the status of each configured endpoint, the host
+// queried, and the number of 127.0.0.1 listeners found there, endpoints or not.
+func readTunnelStatus(ctx context.Context, cfg *Config) ([]bastionmcp.Tunnel, string, int, error) {
 	remoteCmd := `ss -Hltnp 2>/dev/null | awk '/127\.0\.0\.1:/ {
         n = split($4, parts, ":"); port = parts[n]
         match($6, /pid=[0-9]+/); pid = substr($6, RSTART+4, RLENGTH-4)
@@ -252,7 +254,7 @@ func readTunnelStatus(ctx context.Context, cfg *Config) ([]bastionmcp.Tunnel, st
 	if local {
 		out, err = exec.CommandContext(ctx, "sh", "-c", remoteCmd).Output()
 		if err != nil {
-			return nil, "", fmt.Errorf("local status query failed: %w", err)
+			return nil, "", 0, fmt.Errorf("local status query failed: %w", err)
 		}
 	} else {
 		out, err = exec.CommandContext(ctx, "ssh",
@@ -262,7 +264,7 @@ func readTunnelStatus(ctx context.Context, cfg *Config) ([]bastionmcp.Tunnel, st
 			remoteCmd,
 		).Output()
 		if err != nil {
-			return nil, "", fmt.Errorf("status query to %s failed: %w", cfg.AdminAlias, err)
+			return nil, "", 0, fmt.Errorf("status query to %s failed: %w", cfg.AdminAlias, err)
 		}
 	}
 	live := map[int]string{}
@@ -297,17 +299,7 @@ func readTunnelStatus(ctx context.Context, cfg *Config) ([]bastionmcp.Tunnel, st
 		}
 		tunnels = append(tunnels, bastionmcp.Tunnel{Name: n, Port: ep.Port, Status: status, Uptime: uptime, Description: ep.Description})
 	}
-	return tunnels, source, nil
-}
-
-func countLiveTunnels(tunnels []bastionmcp.Tunnel) int {
-	n := 0
-	for _, tunnel := range tunnels {
-		if tunnel.Status == "UP" {
-			n++
-		}
-	}
-	return n
+	return tunnels, source, len(live), nil
 }
 
 func mcpEndpoints(context.Context) ([]bastionmcp.Endpoint, error) {
@@ -336,7 +328,7 @@ func mcpTunnels(ctx context.Context) ([]bastionmcp.Tunnel, error) {
 	if len(cfg.Endpoints) == 0 {
 		return []bastionmcp.Tunnel{}, nil
 	}
-	tunnels, _, err := readTunnelStatus(ctx, cfg)
+	tunnels, _, _, err := readTunnelStatus(ctx, cfg)
 	return tunnels, err
 }
 
