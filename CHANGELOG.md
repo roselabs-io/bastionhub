@@ -8,7 +8,7 @@ Format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `bastionhub mcp` — read-only MCP tools `list_endpoints` and `get_tunnel_status`, over stdio by default or Streamable HTTP bound to `127.0.0.1:8421` with Origin protection. See [docs/mcp.md](docs/mcp.md).
+- `bastionhub mcp` — read-only MCP tools `list_endpoints` and `get_tunnel_status`, over stdio by default or Streamable HTTP bound to `127.0.0.1:8421` with Origin protection and a bearer token the server writes at start to `~/.config/bastionhub/mcp-token` (`BASTIONHUB_MCP_TOKEN_FILE`, mode 0600) and deletes at stop. See [docs/mcp.md](docs/mcp.md).
 - `bastionhub serve` answers `GET` and `HEAD /health` with 200 and `{"status":"ok"}` (`HEAD` without a body); no authentication. `/healthz` is still served.
 - `bastionhub serve` answers `GET` and `HEAD /metrics` in the Prometheus text format (0.0.4), with the admin token as a bearer token. The one metric is `bastionhub_http_requests_total{route,code}`, counted per matched route pattern since the process started; it holds no invite codes, user names or addresses.
 - `bastionhub serve` reads the admin token from `BASTIONHUB_ADMIN_TOKEN` when it is set and non-empty; no token file is read or written in that case. Otherwise it uses the token file as before.

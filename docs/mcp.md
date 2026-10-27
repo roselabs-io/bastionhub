@@ -21,8 +21,22 @@ for access issuance, invites, certificates or configuration changes.
 | Streamable HTTP | `bastionhub mcp --transport http` | `http://127.0.0.1:8421/mcp` |
 
 HTTP binds only to `127.0.0.1`. The SDK's localhost protection rejects requests with a non-localhost
-Host header, and Go's cross-origin protection rejects disallowed `Origin` headers. HTTP has no
-authentication; it is available only on the local machine.
+Host header, and Go's cross-origin protection answers 403 to disallowed `Origin` headers.
+
+## HTTP authentication
+
+At start, the HTTP transport writes a random token (64 hex characters) to the token file, mode
+`0600`, and deletes the file when it stops on SIGINT or SIGTERM. An existing file at that path is
+replaced. Every request carries `Authorization: Bearer <token>`; a request without it, or with another
+token, answers 401. The token changes on every start, so a client reads the file after the server
+starts.
+
+| Variable | Default | Sets |
+|---|---|---|
+| `BASTIONHUB_MCP_TOKEN_FILE` | `~/.config/bastionhub/mcp-token` | the token file |
+
+A server killed with SIGKILL leaves the file; the next start replaces it. On Windows the file's
+mode is not enforced. stdio has no token: the client is the user who launched the process.
 
 ## Configuration and requirements
 

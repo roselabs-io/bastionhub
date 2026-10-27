@@ -8,16 +8,21 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -338,10 +343,77 @@ func mcpCmd(ctx context.Context, cmd *cli.Command) error {
 	case "stdio":
 		return server.Run(ctx, &mcp.StdioTransport{})
 	case "http":
-		fmt.Printf("bastionhub MCP listening at http://%s%s\n", bastionmcp.HTTPAddress, bastionmcp.HTTPPath)
-		return http.ListenAndServe(bastionmcp.HTTPAddress, mcpPathHandler(bastionmcp.HTTPHandler(server)))
+		return serveMCPHTTP(ctx, server)
 	default:
 		return cli.Exit("--transport must be stdio or http", 1)
+	}
+}
+
+func mcpTokenPath() string {
+	if p := os.Getenv("BASTIONHUB_MCP_TOKEN_FILE"); p != "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "bastionhub", "mcp-token")
+}
+
+// writeMCPToken writes a fresh token to path with mode 0600. An existing file
+// is removed first, so the token is never written into a file of another mode
+// or through a symlink.
+func writeMCPToken(path string) (string, error) {
+	token, err := newAdminToken()
+	if err != nil {
+		return "", fmt.Errorf("generating MCP token: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("creating %s: %w", filepath.Dir(path), err)
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("removing %s: %w", path, err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("creating %s: %w", path, err)
+	}
+	if _, err := f.WriteString(token + "\n"); err != nil {
+		f.Close()
+		return "", fmt.Errorf("writing %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("writing %s: %w", path, err)
+	}
+	return token, nil
+}
+
+// serveMCPHTTP serves the MCP server on HTTPAddress until SIGINT or SIGTERM.
+// The bearer token file exists only while the listener is open.
+func serveMCPHTTP(ctx context.Context, server *mcp.Server) error {
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	listener, err := net.Listen("tcp", bastionmcp.HTTPAddress)
+	if err != nil {
+		return cli.Exit(err.Error(), 1)
+	}
+	path := mcpTokenPath()
+	token, err := writeMCPToken(path)
+	if err != nil {
+		listener.Close()
+		return cli.Exit(err.Error(), 1)
+	}
+	defer os.Remove(path)
+	httpSrv := &http.Server{Handler: mcpPathHandler(bastionmcp.HTTPHandler(server, token))}
+	fmt.Printf("bastionhub MCP listening at http://%s%s\n", bastionmcp.HTTPAddress, bastionmcp.HTTPPath)
+	fmt.Printf("Bearer token in %s (0600); it is deleted when the server stops.\n", path)
+	errc := make(chan error, 1)
+	go func() { errc <- httpSrv.Serve(listener) }()
+	select {
+	case err := <-errc:
+		return cli.Exit(err.Error(), 1)
+	case <-ctx.Done():
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutCtx)
+		return nil
 	}
 }
 
@@ -1131,7 +1203,7 @@ func main() {
 			{
 				Name:   "mcp",
 				Usage:  "serve read-only endpoint and tunnel tools over MCP",
-				Flags:  []cli.Flag{&cli.StringFlag{Name: "transport", Usage: "MCP transport: stdio or local HTTP (default: stdio; environment: $BASTIONHUB_MCP_TRANSPORT)", Value: "stdio", Sources: cli.EnvVars("BASTIONHUB_MCP_TRANSPORT")}},
+				Flags:  []cli.Flag{&cli.StringFlag{Name: "transport", Usage: "MCP transport: stdio or local HTTP (default: stdio; environment: $BASTIONHUB_MCP_TRANSPORT); HTTP requires the bearer token it writes to $BASTIONHUB_MCP_TOKEN_FILE, default ~/.config/bastionhub/mcp-token", Value: "stdio", Sources: cli.EnvVars("BASTIONHUB_MCP_TRANSPORT")}},
 				Action: mcpCmd,
 			},
 			{

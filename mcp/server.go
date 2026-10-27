@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
+	"strings"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -68,7 +70,19 @@ func NewServer(version string, readEndpoints ReadEndpoints, readTunnels ReadTunn
 	return server
 }
 
-func HTTPHandler(server *sdk.Server) http.Handler {
+// HTTPHandler serves the server over Streamable HTTP. A request whose
+// Authorization header is not "Bearer <token>" answers 401; a cross-origin
+// browser request answers 403.
+func HTTPHandler(server *sdk.Server, token string) http.Handler {
 	handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true})
-	return http.NewCrossOriginProtection().Handler(handler)
+	authorized := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "missing or invalid bearer token", http.StatusUnauthorized)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+	return http.NewCrossOriginProtection().Handler(authorized)
 }

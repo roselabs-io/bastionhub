@@ -288,8 +288,10 @@ conservative wait covering the full 30-minute attempt window.
 
 `bastionhub mcp` serves the read-only MCP tools `list_endpoints` and
 `get_tunnel_status`. It uses stdio by default. `--transport http` serves
-Streamable HTTP at `http://127.0.0.1:8421/mcp`; requests with a disallowed
-`Origin` are rejected. Tunnel status queries the configured bastion over SSH,
+Streamable HTTP at `http://127.0.0.1:8421/mcp`; each request carries the
+bearer token the server writes at start to `~/.config/bastionhub/mcp-token`
+(`$BASTIONHUB_MCP_TOKEN_FILE`, mode 0600, deleted at stop), and requests with a
+disallowed `Origin` are rejected. Tunnel status queries the configured bastion over SSH,
 or the local host when `BASTIONHUB_LOCAL=1`. The MCP server does not issue
 access, invites or certificates. See [docs/mcp.md](docs/mcp.md).
 

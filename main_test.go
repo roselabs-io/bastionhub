@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -198,6 +199,31 @@ func TestStatusCmdCountsEveryListener(t *testing.T) {
 	}
 	if want := "Querying test-root — 2 configured endpoint(s), 2 live listener(s)\n"; !strings.HasPrefix(out, want) {
 		t.Errorf("output does not start with %q:\n%s", want, out)
+	}
+}
+
+func TestWriteMCPTokenReplacesFileWithMode0600(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp-token")
+	if err := os.WriteFile(path, []byte("stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	token, err := writeMCPToken(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != token+"\n" || len(token) != 2*adminTokenBytes {
+		t.Errorf("file holds %q, token %q", got, token)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, want 0600", info.Mode().Perm())
 	}
 }
 

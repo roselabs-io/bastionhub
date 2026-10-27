@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -66,12 +67,71 @@ func TestToolsThroughSDKClient(t *testing.T) {
 	}
 }
 
-func TestHTTPHandlerRejectsUntrustedOrigin(t *testing.T) {
-	rejected := httptest.NewRecorder()
-	request := httptest.NewRequest("POST", "http://127.0.0.1:8421/mcp", nil)
-	request.Header.Set("Origin", "https://untrusted.example")
-	HTTPHandler(NewServer("test", nil, nil)).ServeHTTP(rejected, request)
-	if rejected.Code != 403 {
-		t.Fatalf("status = %d, want 403", rejected.Code)
+func TestHTTPHandlerRejectsUnauthorizedRequests(t *testing.T) {
+	cases := []struct {
+		name, authorization, origin string
+		want                        int
+	}{
+		{"no token", "", "", 401},
+		{"wrong token", "Bearer wrong", "", 401},
+		{"token without Bearer", "secret", "", 401},
+		{"untrusted origin", "Bearer secret", "https://untrusted.example", 403},
+	}
+	handler := HTTPHandler(NewServer("test", nil, nil), "secret")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rejected := httptest.NewRecorder()
+			request := httptest.NewRequest("POST", "http://127.0.0.1:8421/mcp", nil)
+			if c.authorization != "" {
+				request.Header.Set("Authorization", c.authorization)
+			}
+			if c.origin != "" {
+				request.Header.Set("Origin", c.origin)
+			}
+			handler.ServeHTTP(rejected, request)
+			if rejected.Code != c.want {
+				t.Fatalf("status = %d, want %d", rejected.Code, c.want)
+			}
+		})
+	}
+}
+
+type bearer struct{ token string }
+
+func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+b.token)
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+func TestHTTPHandlerServesSDKClientWithToken(t *testing.T) {
+	server := NewServer("test", nil, nil)
+	httpServer := httptest.NewServer(HTTPHandler(server, "secret"))
+	defer httpServer.Close()
+	ctx := context.Background()
+	client := sdk.NewClient(&sdk.Implementation{Name: "test-client", Version: "test"}, nil)
+	connect := func(token string) (*sdk.ClientSession, error) {
+		return client.Connect(ctx, &sdk.StreamableClientTransport{
+			Endpoint:             httpServer.URL,
+			HTTPClient:           &http.Client{Transport: bearer{token}},
+			MaxRetries:           -1,
+			DisableStandaloneSSE: true,
+		}, nil)
+	}
+	if session, err := connect("wrong"); err == nil {
+		session.Close()
+		t.Fatal("connected with a wrong token")
+	}
+	session, err := connect("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	listed, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Tools) != 2 {
+		t.Fatalf("unexpected tool list: %#v", listed.Tools)
 	}
 }
