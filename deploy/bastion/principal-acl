@@ -1,0 +1,13 @@
+# /etc/bastionhub/principal-acl
+#
+# Read by /usr/local/bin/principal-to-acl. One principal per line, followed by
+# the host:port destinations a certificate carrying that principal may open
+# through gw-passthrough:
+#
+#   <principal> <host:port> [<host:port> ...]
+
+# Forward to the bastion's own sshd.
+gw-edge-ssh-test-loopback localhost:22
+
+# Forward to laptop-a's reverse-tunnel port.
+gw-edge-ssh-test-laptop-a localhost:12001

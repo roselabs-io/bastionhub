@@ -1,0 +1,547 @@
+#!/bin/bash
+# bastionhub — bastion installation for Debian and Ubuntu.
+#
+#   curl -sSL https://raw.githubusercontent.com/roselabs-io/bastionhub/v0.2.0/deploy/install.sh \
+#       | sudo bash -s -- --domain bastion.example.io
+#
+# The URL is pinned to a release tag, so the file does not change between runs.
+#
+# Installs:
+#   - the gw-tunnel, gw-user and gw-passthrough accounts
+#   - an sshd drop-in configuring certificate authentication, with each
+#     account scoped to the forwarding it requires
+#   - the bastionhub binary
+#   - bastionhub serve as a systemd unit, behind Caddy for TLS
+#   - ufw rules for 22, 80, 443 and the service port
+#
+# Prints an admin token on completion.
+#
+# It does not install a certificate authority. The CA remains on the operator's
+# machine; this host stores and relays public keys and certificates only.
+#
+# The script is idempotent: every step checks before it acts.
+
+set -euo pipefail
+
+VERSION="${BASTIONHUB_VERSION:-latest}"
+PORT_LO=12001
+PORT_HI=12099
+SERVE_PORT=8420
+DOMAIN=""
+ACME_EMAIL=""
+USER_CA=""
+SKIP_TLS=0
+SKIP_SSHD=0
+LOCAL_BIN=""
+
+# sshd matches PermitOpen hosts as literal strings, so the loopback address is
+# listed beside localhost. Docker's private networks are allowed through ufw
+# for a containerised proxy.
+LOOPBACK=$(printf '%s.%s.%s.%s' 127 0 0 1)
+DOCKER_NETS=$(printf '%s.%s.%s.%s/%s' 172 16 0 0 12)
+
+die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+note() { printf '\033[36m==>\033[0m %s\n' "$*"; }
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+skip() { printf '  \033[90m·\033[0m %s\n' "$*"; }
+
+usage() {
+    cat <<USAGE
+usage: install.sh --domain <host> [options]
+
+  --domain <host>      Required. Hostname endpoints dial for SSH, and the name
+                       TLS is issued for. A bare IP is rejected unless
+                       --skip-tls is given.
+  --user-ca <path|->   The user CA public key to trust. "-" reads stdin. If
+                       omitted, sshd trusts no CA and the script prints how to
+                       install one afterwards.
+  --acme-email <addr>  Contact address for Let's Encrypt.
+  --skip-tls           Do not install or configure Caddy. Required if another
+                       service holds :80 or :443.
+  --skip-sshd          Do not modify sshd configuration.
+  --version <tag>      bastionhub release to install (default: latest).
+  --binary <path>      Install this binary instead of downloading a release.
+                       For air-gapped hosts, and for testing an unreleased
+                       build.
+USAGE
+    exit 0
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --domain)     DOMAIN="${2:-}"; shift 2 ;;
+        --user-ca)    USER_CA="${2:-}"; shift 2 ;;
+        --acme-email) ACME_EMAIL="${2:-}"; shift 2 ;;
+        --version)    VERSION="${2:-}"; shift 2 ;;
+        --binary)     LOCAL_BIN="${2:-}"; shift 2 ;;
+        --skip-tls)   SKIP_TLS=1; shift ;;
+        --skip-sshd)  SKIP_SSHD=1; shift ;;
+        -h|--help)    usage ;;
+        *) die "unknown option: $1 (try --help)" ;;
+    esac
+done
+
+# --- preflight ---------------------------------------------------------------
+
+[ -n "$DOMAIN" ] || die "--domain is required (try --help)"
+
+# A bare IP works for SSH but not for the invite link: no CA issues
+# certificates for IP addresses, so https://<ip>/j/<code> presents no valid
+# certificate. The bootstrap URL is piped into a shell on the far end, so TLS
+# verification is required rather than optional.
+if printf '%s' "$DOMAIN" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+    if [ "$SKIP_TLS" = "0" ]; then
+        cat >&2 <<MSG
+
+$DOMAIN is an IP address. Let's Encrypt cannot issue a certificate for it, so
+the invite link would have no valid TLS and the bootstrap command would fail
+on the far end.
+
+Either point a hostname at this box — any free domain works — or pass
+--skip-tls and terminate TLS yourself.
+
+MSG
+        die "refusing to set up an invite service with no usable TLS"
+    fi
+    printf '\033[33mwarning:\033[0m %s is an IP. Invite links will need TLS from whatever you put in front.\n' "$DOMAIN"
+fi
+
+[ "$(id -u)" = "0" ] || die "run as root (sudo)"
+command -v systemctl >/dev/null || die "this script needs systemd"
+command -v apt-get   >/dev/null || die "this script supports Debian/Ubuntu; adapt it for your distro"
+
+case "$(uname -m)" in
+    x86_64|amd64) ARCH=amd64 ;;
+    aarch64|arm64) ARCH=arm64 ;;
+    *) die "unsupported architecture: $(uname -m)" ;;
+esac
+
+# Resolving the domain to this host is not required — split-horizon DNS and
+# proxies are legitimate — but getting it wrong is the most common way for
+# this to half-work, so say something.
+RESOLVED=$(getent hosts "$DOMAIN" 2>/dev/null | awk '{print $1}' | head -1 || true)
+if [ -z "$RESOLVED" ] && [ "$SKIP_TLS" = "0" ]; then
+    printf '\033[33mwarning:\033[0m %s does not resolve yet. TLS issuance will fail until it does.\n' "$DOMAIN"
+elif [ -n "$RESOLVED" ] && [ "$SKIP_TLS" = "0" ]; then
+    note "$DOMAIN resolves to $RESOLVED"
+fi
+
+note "Installing bastionhub on $DOMAIN ($ARCH)"
+
+# --- role users --------------------------------------------------------------
+#
+# Three accounts. A certificate's principal must match the target username, so
+# these names are what the Match blocks below key on: gw-tunnel may listen and
+# not forward, gw-user may forward and not listen. authorized_keys is left
+# empty; authentication is by certificate.
+
+note "Role users"
+for u in gw-tunnel gw-user gw-passthrough; do
+    if id "$u" >/dev/null 2>&1; then
+        skip "$u exists"
+    else
+        useradd -m -s /usr/sbin/nologin "$u"
+        ok "created $u"
+    fi
+    install -d -m 700 -o "$u" -g "$u" "/home/$u/.ssh"
+    : > "/home/$u/.ssh/authorized_keys"
+    chown "$u:$u" "/home/$u/.ssh/authorized_keys"
+    chmod 600 "/home/$u/.ssh/authorized_keys"
+done
+
+# --- is something already holding the web ports? -----------------------------
+#
+# A bastion is often not a dedicated box. If something already owns :80/:443 —
+# a Docker reverse proxy, an existing nginx — installing another web server
+# breaks whatever is there. Refuse rather than fight it, and say what to do.
+
+if [ "$SKIP_TLS" = "0" ]; then
+    HOLDER=""
+    if command -v ss >/dev/null; then
+        HOLDER=$(ss -ltnp 2>/dev/null | awk '$4 ~ /:(80|443)$/ {print $NF}' | head -1 || true)
+    fi
+    if [ -n "$HOLDER" ] && ! echo "$HOLDER" | grep -q caddy; then
+        cat >&2 <<MSG
+
+Something already listens on :80/:443 on this host:
+    $HOLDER
+
+Installing another web server would break it. Two ways forward:
+
+  1. Point the existing proxy at bastionhub and re-run with --skip-tls:
+
+         $DOMAIN {
+             reverse_proxy localhost:$SERVE_PORT
+         }
+
+     (nginx: proxy_pass http://localhost:$SERVE_PORT;)
+
+     If that proxy runs in a container, localhost is the container — use the
+     host's bridge address, and allow it through the firewall.
+
+  2. Run bastionhub on a host of its own.
+
+MSG
+        die "refusing to take ports another service is using"
+    fi
+    [ -n "$HOLDER" ] && note "existing Caddy detected — will add a site to it rather than replace it"
+fi
+
+# --- sshd --------------------------------------------------------------------
+
+if [ "$SKIP_SSHD" = "1" ]; then
+    note "sshd: skipped (--skip-sshd)"
+else
+    note "sshd configuration"
+
+    if [ -n "$USER_CA" ]; then
+        if [ "$USER_CA" = "-" ]; then
+            cat > /etc/ssh/user_ca.pub
+        else
+            [ -f "$USER_CA" ] || die "no such file: $USER_CA"
+            cp "$USER_CA" /etc/ssh/user_ca.pub
+        fi
+        chmod 644 /etc/ssh/user_ca.pub
+        # user_ca and user_ca.pub differ by one tab-completion. Reject the
+        # private key rather than install it as a trust root.
+        if grep -q "PRIVATE KEY" /etc/ssh/user_ca.pub; then
+            rm -f /etc/ssh/user_ca.pub
+            die "that is a PRIVATE key. The CA private key must never leave the operator's machine. Pass the .pub."
+        fi
+        ok "trusting CA $(ssh-keygen -lf /etc/ssh/user_ca.pub | awk '{print $2}')"
+    elif [ -f /etc/ssh/user_ca.pub ]; then
+        skip "using existing /etc/ssh/user_ca.pub"
+    else
+        printf '\033[33mwarning:\033[0m no user CA installed — nobody can authenticate yet.\n'
+        printf '          finish with: scp ca/user_ca.pub root@%s:/etc/ssh/user_ca.pub\n' "$DOMAIN"
+        touch /etc/ssh/user_ca.pub
+    fi
+
+    [ -f /etc/ssh/revoked_keys.krl ] || : > /etc/ssh/revoked_keys.krl
+
+    # Neither PermitListen nor PermitOpen accepts a port range: "12001-12099"
+    # is a syntax error. PermitOpen also matches the requested host as a
+    # literal string, so both spellings are needed. Generated rather than
+    # written out to keep the two lists in sync with PORT_LO/PORT_HI.
+    # 7890 is sshboard, reachable over a local forward if it is run on this
+    # host. Harmless to permit when it is not.
+    LISTEN_PORTS=""; OPEN_PORTS="$LOOPBACK:7890 localhost:7890"
+    for p in $(seq $PORT_LO $PORT_HI); do
+        LISTEN_PORTS="$LISTEN_PORTS $p"
+        OPEN_PORTS="$OPEN_PORTS $LOOPBACK:$p localhost:$p"
+    done
+
+    cat > /etc/ssh/sshd_config.d/10-bastionhub.conf <<CONF
+# /etc/ssh/sshd_config.d/10-bastionhub.conf
+# Written by bastionhub install.sh. Regenerated on re-run — edit the installer,
+# not this file.
+#
+# The security model is these two Match blocks. A device holds a cert with
+# principal gw-tunnel and may listen on a tunnel port; it gets no shell and
+# cannot forward. An operator holds gw-user and may forward to a tunnel port;
+# they get no shell and cannot listen. Neither can do the other's job.
+#
+# OpenSSH maps a certificate's principal to the target username. These are
+# "Match User" blocks because "Match Principal" is not valid sshd_config
+# syntax; Match accepts User, Group, Host, LocalAddress, LocalPort, RDomain
+# and Address only.
+
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+
+# Drop dead connections. Without this a flapping endpoint holds its port until
+# sshd notices, and the reconnect fails to bind.
+ClientAliveInterval 30
+ClientAliveCountMax 3
+
+TrustedUserCAKeys /etc/ssh/user_ca.pub
+RevokedKeys /etc/ssh/revoked_keys.krl
+
+Match User gw-tunnel
+    AuthenticationMethods publickey
+    PasswordAuthentication no
+    AllowTcpForwarding remote
+    PermitListen$LISTEN_PORTS
+    PermitOpen none
+    ForceCommand /bin/false
+    PermitTTY no
+    X11Forwarding no
+    AllowAgentForwarding no
+
+Match User gw-user
+    AuthenticationMethods publickey
+    PasswordAuthentication no
+    AllowTcpForwarding local
+    PermitListen none
+    PermitOpen$OPEN_PORTS
+    ForceCommand /bin/false
+    PermitTTY no
+    X11Forwarding no
+    AllowAgentForwarding no
+CONF
+    chmod 644 /etc/ssh/sshd_config.d/10-bastionhub.conf
+
+    if [ -f /etc/ssh/ssh_host_ed25519_key-cert.pub ]; then
+        echo "HostCertificate /etc/ssh/ssh_host_ed25519_key-cert.pub" \
+            >> /etc/ssh/sshd_config.d/10-bastionhub.conf
+        ok "host certificate enabled"
+    fi
+
+    # sshd -t needs this and will not create it. Absent on a box where sshd has
+    # never run, which is exactly where this script gets used.
+    [ -d /run/sshd ] || install -d -m 755 /run/sshd
+
+    if ! SSHD_ERR=$(sshd -t 2>&1); then
+        printf '\033[31merror:\033[0m sshd rejected the configuration. Nothing was reloaded.\n' >&2
+        printf '%s\n' "$SSHD_ERR" | sed 's/^/    /' >&2
+        # Leave the file behind: reading it is how anyone diagnoses this.
+        die "see /etc/ssh/sshd_config.d/10-bastionhub.conf"
+    fi
+    ok "config valid"
+
+    # Revert automatically if this script does not reach the end, so a failure
+    # part-way through cannot leave a host unreachable.
+    RESTORE=/run/bastionhub-sshd-restore
+    mkdir -p "$RESTORE"
+    cp /etc/ssh/sshd_config.d/10-bastionhub.conf "$RESTORE/" 2>/dev/null || true
+    cat > "$RESTORE/undo.sh" <<'UNDO'
+#!/bin/bash
+rm -f /etc/ssh/sshd_config.d/10-bastionhub.conf
+sshd -t && systemctl reload ssh
+logger "bastionhub install: sshd config auto-reverted (installer did not finish)"
+UNDO
+    chmod +x "$RESTORE/undo.sh"
+    systemd-run --on-active=5min --unit=bastionhub-sshd-undo "$RESTORE/undo.sh" >/dev/null 2>&1 || true
+
+    # Debian calls it ssh.service, RHEL-alikes sshd.service, and on a truly
+    # fresh image it may not be running at all.
+    SSHD_UNIT=""
+    for u in ssh sshd; do
+        systemctl list-unit-files "$u.service" >/dev/null 2>&1 && \
+            systemctl cat "$u.service" >/dev/null 2>&1 && { SSHD_UNIT=$u; break; }
+    done
+    [ -n "$SSHD_UNIT" ] || die "no ssh/sshd systemd unit found"
+
+    if systemctl is-active --quiet "$SSHD_UNIT"; then
+        systemctl reload "$SSHD_UNIT"
+        ok "sshd reloaded (auto-revert armed for 5 minutes)"
+    else
+        systemctl enable --now "$SSHD_UNIT" >/dev/null 2>&1 || true
+        ok "sshd started"
+    fi
+fi
+
+# --- the binary --------------------------------------------------------------
+
+note "bastionhub binary"
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+if [ -n "$LOCAL_BIN" ]; then
+    [ -f "$LOCAL_BIN" ] || die "no such file: $LOCAL_BIN"
+    BIN="$LOCAL_BIN"
+    ok "using $LOCAL_BIN"
+else
+if [ "$VERSION" = "latest" ]; then
+    VERSION=$(curl -fsSL https://api.github.com/repos/roselabs-io/bastionhub/releases/latest \
+        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+    [ -n "$VERSION" ] || die "could not determine the latest release; pass --version"
+fi
+TARBALL="bastionhub-${VERSION}-linux-${ARCH}.tar.gz"
+BASE="https://github.com/roselabs-io/bastionhub/releases/download/${VERSION}"
+
+if ! curl -fsSL "$BASE/$TARBALL" -o "$TMP/$TARBALL"; then
+    die "download failed: $BASE/$TARBALL"
+fi
+
+# Every release ships checksums.txt.
+if curl -fsSL "$BASE/checksums.txt" -o "$TMP/checksums.txt" 2>/dev/null; then
+    WANT=$(awk -v f="$TARBALL" '$2 == f || $2 == "*"f {print $1}' "$TMP/checksums.txt" | head -1)
+    if [ -n "$WANT" ]; then
+        GOT=$(sha256sum "$TMP/$TARBALL" | awk '{print $1}')
+        [ "$WANT" = "$GOT" ] || die "checksum mismatch for $TARBALL (expected $WANT, got $GOT)"
+        ok "checksum verified"
+    else
+        printf '\033[33mwarning:\033[0m %s not listed in checksums.txt\n' "$TARBALL"
+    fi
+else
+    printf '\033[33mwarning:\033[0m no checksums.txt in this release; binary unverified\n'
+fi
+
+tar -xzf "$TMP/$TARBALL" -C "$TMP"
+BIN=$(find "$TMP" -type f -name bastionhub | head -1)
+[ -n "$BIN" ] || die "no bastionhub binary in $TARBALL"
+fi
+
+# `serve` is what this script exists to install. Releases before it exist will
+# install fine and then fail at the systemd step with an unhelpful usage dump.
+if ! "$BIN" serve --help >/dev/null 2>&1; then
+    die "this bastionhub build has no 'serve' command ($("$BIN" --version 2>&1)). Use --version with a release that includes it, or --binary with a build of your own."
+fi
+
+# Overwriting a running binary in place fails with ETXTBSY. Stage and swap.
+install -m 755 "$BIN" /usr/local/bin/bastionhub.new
+if systemctl is-active --quiet bastionhub-serve 2>/dev/null; then
+    systemctl stop bastionhub-serve
+fi
+mv /usr/local/bin/bastionhub.new /usr/local/bin/bastionhub
+ok "installed $(/usr/local/bin/bastionhub --version)"
+
+# --- serve -------------------------------------------------------------------
+#
+# Runs as a host process rather than a container, to avoid adding a container
+# runtime as a dependency of the bastion.
+
+note "invite service"
+BIND_ADDR="$LOOPBACK"
+if [ "$SKIP_TLS" = "0" ] && command -v docker >/dev/null 2>&1 && docker ps >/dev/null 2>&1; then
+    # A containerised proxy cannot reach the host loopback address.
+    BIND_ADDR=$(ip -4 addr show docker0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
+    BIND_ADDR="${BIND_ADDR:-$LOOPBACK}"
+fi
+
+cat > /etc/systemd/system/bastionhub-serve.service <<UNIT
+[Unit]
+Description=bastionhub invite/relay service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/bastionhub serve --bastion $DOMAIN --listen $BIND_ADDR:$SERVE_PORT --base-url https://$DOMAIN
+Restart=always
+RestartSec=5
+User=root
+
+StateDirectory=bastionhub
+StateDirectoryMode=0700
+Environment=BASTIONHUB_SERVE_STATE=/var/lib/bastionhub/invites.json
+Environment=BASTIONHUB_ADMIN_TOKEN_FILE=/var/lib/bastionhub/admin-token
+
+# The service reads and writes only its own state directory.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now bastionhub-serve >/dev/null 2>&1
+sleep 2
+systemctl is-active --quiet bastionhub-serve || {
+    journalctl -u bastionhub-serve -n 20 --no-pager >&2
+    die "bastionhub-serve failed to start"
+}
+ok "serve listening on $BIND_ADDR:$SERVE_PORT"
+
+# --- TLS ---------------------------------------------------------------------
+#
+# The bootstrap URL is piped into a shell on the far end, so TLS verification
+# is required.
+
+if [ "$SKIP_TLS" = "1" ]; then
+    note "TLS: skipped (--skip-tls). Point your proxy at $BIND_ADDR:$SERVE_PORT."
+else
+    note "TLS"
+    if ! command -v caddy >/dev/null 2>&1; then
+        apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https curl >/dev/null
+        curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
+            | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null
+        echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
+            > /etc/apt/sources.list.d/caddy-stable.list
+        apt-get update -qq
+        apt-get install -y -qq caddy >/dev/null
+        ok "installed caddy"
+    else
+        skip "caddy present"
+    fi
+
+    SITE=/etc/caddy/Caddyfile.d/bastionhub.caddy
+    mkdir -p /etc/caddy/Caddyfile.d
+    {
+        [ -n "$ACME_EMAIL" ] && printf '{\n\temail %s\n}\n\n' "$ACME_EMAIL"
+        printf '%s {\n\treverse_proxy %s:%s\n}\n' "$DOMAIN" "$BIND_ADDR" "$SERVE_PORT"
+    } > "$SITE"
+
+    # Debian's Caddyfile does not import a site directory by default.
+    if ! grep -q "Caddyfile.d" /etc/caddy/Caddyfile 2>/dev/null; then
+        printf '\nimport /etc/caddy/Caddyfile.d/*.caddy\n' >> /etc/caddy/Caddyfile
+    fi
+
+    caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 \
+        || die "Caddy config invalid — nothing reloaded"
+    systemctl enable caddy >/dev/null 2>&1
+    systemctl reload caddy 2>/dev/null || systemctl restart caddy
+    ok "caddy serving $DOMAIN"
+fi
+
+# --- firewall ----------------------------------------------------------------
+
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "^Status: active"; then
+    note "firewall"
+    for rule in "22/tcp" "80/tcp" "443/tcp"; do
+        ufw status | grep -q "^$rule" || { ufw allow "$rule" >/dev/null; ok "allowed $rule"; }
+    done
+    # A containerised proxy reaches the host over the docker bridge, and ufw's
+    # default policy is DROP.
+    if [ "$BIND_ADDR" != "$LOOPBACK" ]; then
+        ufw status | grep -q "$SERVE_PORT" || {
+            ufw allow from "$DOCKER_NETS" to any port "$SERVE_PORT" proto tcp >/dev/null
+            ok "allowed $SERVE_PORT from container networks"
+        }
+    fi
+fi
+
+# --- done --------------------------------------------------------------------
+
+systemctl stop bastionhub-sshd-undo.timer 2>/dev/null || true
+systemctl reset-failed bastionhub-sshd-undo.timer 2>/dev/null || true
+rm -rf /run/bastionhub-sshd-restore
+
+TOKEN=$(cat /var/lib/bastionhub/admin-token 2>/dev/null || echo "<unavailable>")
+
+cat <<DONE
+
+$(printf '\033[32m✓\033[0m') Installed. Service reachable at https://$DOMAIN
+
+Set these on the machine holding the CA:
+
+    export BASTIONHUB_SERVE_URL=https://$DOMAIN
+    export BASTIONHUB_ADMIN_TOKEN=$TOKEN
+
+Enrollment:
+
+    bastionhub invite <name> --shape device
+        A machine to be reached. Installs a persistent tunnel.
+
+    bastionhub invite <name> --shape access --valid +52w
+        A machine that reaches others. Issues a gw-user certificate, which
+        is not scoped to a specific endpoint and covers endpoints enrolled
+        later.
+
+DONE
+
+if [ ! -s /etc/ssh/user_ca.pub ]; then
+    cat <<PENDING
+$(printf '\033[33m!\033[0m') No CA public key is installed, so no certificate will authenticate.
+  From the machine holding the CA:
+
+    scp ca/user_ca.pub root@$DOMAIN:/etc/ssh/user_ca.pub
+    ssh root@$DOMAIN 'sshd -t && systemctl reload ssh'
+
+PENDING
+fi
+
+cat <<'FOOTER'
+This host stores public keys and certificates only. Signing happens on the
+machine holding the CA, which must be reachable while an invite is redeemed.
+
+FOOTER
